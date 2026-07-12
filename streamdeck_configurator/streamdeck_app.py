@@ -133,6 +133,8 @@ class AgentThread:
 
     # ---- 受信 ----
     def _receive_loop(self):
+        if AGENT_OK:
+            ag.co_initialize()   # このスレッドで pycaw(マイク制御) を使うため
         while self._running:
             if not self._ser or not self._ser.is_open:
                 time.sleep(0.5)
@@ -200,6 +202,8 @@ class AgentThread:
         return self._weather
 
     def _info_loop(self):
+        if AGENT_OK:
+            ag.co_initialize()   # このスレッドで pycaw(音量/マイク取得) を使うため
         interval = getattr(ag, "SEND_INTERVAL", 2.0) if AGENT_OK else 2.0
         while self._running:
             if not self._ser or not self._ser.is_open:

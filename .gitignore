@@ -7,3 +7,8 @@ venv/
 
 # PC-side runtime config (generated per machine)
 streamdeck_configurator/streamdeck_config.json
+
+# PyInstaller build artifacts
+build/
+dist/
+*.spec

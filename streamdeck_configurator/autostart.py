@@ -38,21 +38,27 @@ def enable() -> bool:
         startup = _startup_dir()
         startup.mkdir(parents=True, exist_ok=True)
 
-        # このスクリプト(streamdeck_app.py)の絶対パス
-        app_script = Path(__file__).resolve().parent / "streamdeck_app.py"
-        work_dir = app_script.parent
-
-        # pythonw.exe を優先（コンソール非表示）。無ければ python.exe
-        py = sys.executable
-        pyw = py.replace("python.exe", "pythonw.exe")
-        launcher = pyw if Path(pyw).exists() else py
-
-        # .bat の内容（作業ディレクトリに移動してから起動）
-        bat = (
-            f'@echo off\r\n'
-            f'cd /d "{work_dir}"\r\n'
-            f'start "" "{launcher}" "{app_script}"\r\n'
-        )
+        if getattr(sys, "frozen", False):
+            # PyInstaller等でexe化されている場合：exe自身を直接起動
+            exe = Path(sys.executable).resolve()
+            work_dir = exe.parent
+            bat = (
+                f'@echo off\r\n'
+                f'cd /d "{work_dir}"\r\n'
+                f'start "" "{exe}"\r\n'
+            )
+        else:
+            # スクリプト実行時：pythonw.exe（コンソール非表示）で起動
+            app_script = Path(__file__).resolve().parent / "streamdeck_app.py"
+            work_dir = app_script.parent
+            py = sys.executable
+            pyw = py.replace("python.exe", "pythonw.exe")
+            launcher = pyw if Path(pyw).exists() else py
+            bat = (
+                f'@echo off\r\n'
+                f'cd /d "{work_dir}"\r\n'
+                f'start "" "{launcher}" "{app_script}"\r\n'
+            )
         _bat_path().write_text(bat, encoding="utf-8")
         return True
     except Exception as e:

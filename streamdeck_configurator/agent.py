@@ -28,6 +28,19 @@ except ImportError:
     PYCAW_OK = False
     print("[WARN] pycaw が見つかりません。音量/マイク制御は無効です。")
 
+
+def co_initialize():
+    """呼び出しスレッドで COM を初期化する。
+    pycaw(COM) をバックグラウンドスレッドから使うには各スレッドで
+    CoInitialize が必要（未初期化だと音量取得が失敗し -1 になる）。"""
+    if not PYCAW_OK:
+        return
+    try:
+        import comtypes
+        comtypes.CoInitialize()
+    except Exception as e:
+        print(f"[COM] CoInitialize 失敗: {e}")
+
 SEND_INTERVAL   = 2.0   # 秒ごとに Pico へ情報送信
 APP_DISPLAY_MAX = 8     # LCD に表示するアプリ数
 WEATHER_INTERVAL = 600  # 天気は10分ごとに取得（APIレート制限対策）
@@ -272,6 +285,7 @@ class StreamDeckAgent:
                 self._ser = None
 
     def _receive_loop(self):
+        co_initialize()   # このスレッドで pycaw(マイク制御) を使うため
         while self._running:
             if not self._ser or not self._ser.is_open:
                 time.sleep(0.5); continue
@@ -325,6 +339,7 @@ class StreamDeckAgent:
         return self._weather
 
     def _info_loop(self):
+        co_initialize()   # このスレッドで pycaw(音量/マイク取得) を使うため
         while self._running:
             if not self._ser or not self._ser.is_open:
                 print("[RECONNECT] 再接続を試みます...")
