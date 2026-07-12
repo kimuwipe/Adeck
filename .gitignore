@@ -1,0 +1,9 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# PC-side runtime config (generated per machine)
+streamdeck_configurator/streamdeck_config.json

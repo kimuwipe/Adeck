@@ -47,9 +47,31 @@ KEY_OPTIONS = [
     "MIC_UP","MIC_DOWN","MIC_MUTE","APP_CALC",
     # アプリ起動
     "APP_LAUNCH",
+    # 値入力アクション（右の入力欄に URL / コマンド / テキストを入力）
+    "URL_OPEN","CMD_RUN","TEXT_INPUT",
     # プロファイル
     "PROFILE_NEXT",
 ]
+
+# 入力欄（arg）に値を入れて使うアクション
+ARG_ACTIONS = {"URL_OPEN", "CMD_RUN", "TEXT_INPUT"}
+
+# キー種別 → config.py に書き出すプレフィックス
+_ARG_PREFIX = {"URL_OPEN": "URL", "CMD_RUN": "CMD", "TEXT_INPUT": "TEXT"}
+
+
+def action_literal(key: str, app: str, arg: str) -> str:
+    """キー種別・アプリパス・入力値から config.py に埋め込む
+    Python文字列リテラル（またはNone）を生成する。
+    json.dumps で安全にエスケープするため、テキストに引用符・改行が
+    含まれていても壊れない。"""
+    if key == "APP_LAUNCH" and app:
+        return json.dumps(f"APP:{app}", ensure_ascii=False)
+    if key in _ARG_PREFIX and arg:
+        return json.dumps(f"{_ARG_PREFIX[key]}:{arg}", ensure_ascii=False)
+    if key in ("（なし）", None, ""):
+        return "None"
+    return json.dumps(key, ensure_ascii=False)
 
 
 # ===== デフォルト設定 =====
@@ -85,12 +107,13 @@ def default_config() -> dict:
     return {
         "profiles": PROFILES,
         "switches": [
-            [{"key": k, "app": ""} for k in sw_maps[p]]
+            [{"key": k, "app": "", "arg": ""} for k in sw_maps[p]]
             for p in range(len(PROFILES))
         ],
         "encoders": [
-            [{"cw": cw, "ccw": ccw, "push": push, "app_cw": "",
-              "app_ccw": "", "app_push": ""}
+            [{"cw": cw, "ccw": ccw, "push": push,
+              "app_cw": "", "app_ccw": "", "app_push": "",
+              "arg_cw": "", "arg_ccw": "", "arg_push": ""}
              for cw, ccw, push in enc_maps[p]]
             for p in range(len(PROFILES))
         ],
@@ -103,6 +126,13 @@ def config_to_py(cfg: dict) -> str:
     lines = [
         "# config.py  (configurator.py により自動生成)",
         "# 手動編集は configurator.py で上書きされます",
+        "#",
+        "# アクション記法:",
+        "#   \"KEY_NAME\"   → キー送信（PC側 agent.py）",
+        "#   \"APP:path\"   → アプリ起動",
+        "#   \"URL:...\"    → 既定ブラウザでURLを開く",
+        "#   \"CMD:...\"    → シェルコマンド実行",
+        "#   \"TEXT:...\"   → テキスト入力（\\n=改行）",
         "",
         f'PROFILES = {json.dumps(cfg["profiles"], ensure_ascii=False)}',
         "",
@@ -111,34 +141,28 @@ def config_to_py(cfg: dict) -> str:
     for p_sws in cfg["switches"]:
         lines.append("    [")
         for sw in p_sws:
-            k = sw.get("key", "（なし）")
-            if k == "APP_LAUNCH" and sw.get("app"):
-                val = f'"APP:{sw["app"]}"'
-            elif k in ("（なし）", None):
-                val = "None"
-            else:
-                val = f'"{k}"'
+            val = action_literal(sw.get("key", "（なし）"),
+                                 sw.get("app", ""), sw.get("arg", ""))
             lines.append(f"        {val},")
         lines.append("    ],")
     lines.append("]")
     lines.append("")
+
+    def _enc_tuple(enc: dict) -> str:
+        cw   = action_literal(enc.get("cw"),   enc.get("app_cw", ""),   enc.get("arg_cw", ""))
+        ccw  = action_literal(enc.get("ccw"),  enc.get("app_ccw", ""),  enc.get("arg_ccw", ""))
+        push = action_literal(enc.get("push"), enc.get("app_push", ""), enc.get("arg_push", ""))
+        return f"({cw}, {ccw}, {push})"
+
     lines.append("_ENC_COMMON = [")
     # ENC1〜3 は全プロファイル同じ（プロファイル0から取得）
     for i in range(3):
-        enc = cfg["encoders"][0][i]
-        cw   = f'"{enc["cw"]}"'   if enc["cw"]   not in ("（なし）", None) else "None"
-        ccw  = f'"{enc["ccw"]}"'  if enc["ccw"]  not in ("（なし）", None) else "None"
-        push = f'"{enc["push"]}"' if enc["push"] not in ("（なし）", None) else "None"
-        lines.append(f"    ({cw}, {ccw}, {push}),")
+        lines.append(f"    {_enc_tuple(cfg['encoders'][0][i])},")
     lines.append("]")
     lines.append("")
     lines.append("_ENC4_BY_PROFILE = [")
     for p in range(len(PROFILES)):
-        enc  = cfg["encoders"][p][3]
-        cw   = f'"{enc["cw"]}"'   if enc["cw"]   not in ("（なし）", None) else "None"
-        ccw  = f'"{enc["ccw"]}"'  if enc["ccw"]  not in ("（なし）", None) else "None"
-        push = f'"{enc["push"]}"' if enc["push"] not in ("（なし）", None) else "None"
-        lines.append(f"    ({cw}, {ccw}, {push}),  # {PROFILES[p]}")
+        lines.append(f"    {_enc_tuple(cfg['encoders'][p][3])},  # {PROFILES[p]}")
     lines.append("]")
     lines.append("")
     lines.append("ENCODER_MAP = [")
@@ -265,6 +289,14 @@ class App(tk.Tk):
         inner.bind("<Configure>",
                    lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
 
+        # 使い方ヒント
+        tk.Label(inner,
+                 text="URL_OPEN / CMD_RUN / TEXT_INPUT を選ぶと、右の入力欄に "
+                      "URL・コマンド・入力テキストを設定できます。"
+                      "APP_LAUNCH は 📁 ボタンで .exe を選択。",
+                 font=("Yu Gothic UI",8), fg="#888", bg="#FFFFFF",
+                 wraplength=560, justify="left").pack(anchor="w", padx=16, pady=(10,0))
+
         # スイッチ
         tk.Label(inner, text="スイッチ（8個）",
                  font=("Yu Gothic UI",10,"bold"),
@@ -305,10 +337,16 @@ class App(tk.Tk):
 
         app_lbl = tk.Label(inner, textvariable=app_var,
                            font=("Yu Gothic UI",9), fg="#2563EB",
-                           bg="#FFFFFF", anchor="w")
-        app_lbl.pack(side="left", padx=4, fill="x", expand=True)
+                           bg="#FFFFFF", anchor="w", width=10)
+        app_lbl.pack(side="left", padx=4)
 
-        self._sw_vars[pi].append({"key": key_var, "app": app_var})
+        # URL / コマンド / テキスト 入力欄
+        arg_var   = tk.StringVar()
+        arg_entry = tk.Entry(inner, textvariable=arg_var,
+                             font=("Yu Gothic UI",9), width=26)
+        arg_entry.pack(side="left", padx=4, fill="x", expand=True)
+
+        self._sw_vars[pi].append({"key": key_var, "app": app_var, "arg": arg_var})
 
     def _build_enc_row(self, parent, pi, ei):
         row = tk.Frame(parent, bg="#FFFFFF")
@@ -346,10 +384,16 @@ class App(tk.Tk):
 
             al = tk.Label(sub, textvariable=av,
                           font=("Yu Gothic UI",9), fg="#2563EB",
-                          bg="#FFFFFF", anchor="w")
+                          bg="#FFFFFF", anchor="w", width=10)
             al.pack(side="left", padx=4)
 
-            d_vars[dkey] = {"key": kv, "app": av}
+            # URL / コマンド / テキスト 入力欄
+            gv = tk.StringVar()
+            ge = tk.Entry(sub, textvariable=gv,
+                          font=("Yu Gothic UI",9), width=24)
+            ge.pack(side="left", padx=4, fill="x", expand=True)
+
+            d_vars[dkey] = {"key": kv, "app": av, "arg": gv}
 
         self._enc_vars[pi].append(d_vars)
 
@@ -384,6 +428,7 @@ class App(tk.Tk):
                 k = sw.get("key","（なし）") or "（なし）"
                 v["key"].set(k)
                 v["app"].set(Path(sw.get("app","")).name if sw.get("app") else "")
+                v["arg"].set(sw.get("arg",""))
 
             encs = self.cfg["encoders"][pi]
             for ei, enc in enumerate(encs):
@@ -396,6 +441,7 @@ class App(tk.Tk):
                     akey = f"app_{dk}"
                     dv[dk]["app"].set(
                         Path(enc.get(akey,"")).name if enc.get(akey) else "")
+                    dv[dk]["arg"].set(enc.get(f"arg_{dk}",""))
 
         self._brightness_var.set(self.cfg.get("display",{}).get("brightness",80))
         self._brl.config(text=f"{self._brightness_var.get()}%")
@@ -406,8 +452,8 @@ class App(tk.Tk):
                 if si >= len(self._sw_vars[pi]):
                     break
                 v = self._sw_vars[pi][si]
-                k = v["key"].get()
-                self.cfg["switches"][pi][si]["key"] = k
+                self.cfg["switches"][pi][si]["key"] = v["key"].get()
+                self.cfg["switches"][pi][si]["arg"] = v["arg"].get()
 
             for ei in range(ENC_COUNT):
                 if ei >= len(self._enc_vars[pi]):
@@ -415,6 +461,7 @@ class App(tk.Tk):
                 dv = self._enc_vars[pi][ei]
                 for dk in ("cw","ccw","push"):
                     self.cfg["encoders"][pi][ei][dk] = dv[dk]["key"].get()
+                    self.cfg["encoders"][pi][ei][f"arg_{dk}"] = dv[dk]["arg"].get()
 
         self.cfg["display"]["brightness"] = self._brightness_var.get()
 

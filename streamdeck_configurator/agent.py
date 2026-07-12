@@ -16,6 +16,7 @@ import subprocess
 import threading
 import psutil
 import urllib.request
+import webbrowser
 
 try:
     from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
@@ -369,6 +370,73 @@ except ImportError:
     PYAUTOGUI_OK = False
     print("[WARN] pyautogui が見つかりません。キー送信は無効です。")
 
+# クリップボード（任意）。日本語などASCII外テキストの入力に使用。
+try:
+    import pyperclip
+    PYPERCLIP_OK = True
+except ImportError:
+    PYPERCLIP_OK = False
+
+
+# ===== プレフィックスアクション（URL / コマンド / テキスト）=====
+# configurator で "URL:...", "CMD:...", "TEXT:..." の形で割り当てる。
+def open_url(url: str):
+    """既定ブラウザで URL を開く"""
+    try:
+        u = url.strip()
+        if u and not (u.startswith("http://") or u.startswith("https://")
+                      or "://" in u):
+            u = "https://" + u
+        webbrowser.open(u)
+        print(f"[URL] {u}")
+    except Exception as e:
+        print(f"[URL ERROR] {e}")
+
+
+def run_command(command: str):
+    """ユーザーが設定したシェルコマンドを実行する"""
+    try:
+        subprocess.Popen(command, shell=True)
+        print(f"[CMD] {command}")
+    except Exception as e:
+        print(f"[CMD ERROR] {e}")
+
+
+def type_text(text: str):
+    """テキストを現在フォーカスされている入力先へ送る。
+    ASCIIのみは pyautogui.write、日本語等はクリップボード貼り付けで対応。
+    config.py 経由で渡るため \\n \\t はエスケープとして復元する。"""
+    if not PYAUTOGUI_OK:
+        print(f"[TEXT] pyautogui無効: {text}")
+        return
+    text = text.replace("\\n", "\n").replace("\\t", "\t")
+    is_ascii = all(ord(c) < 128 for c in text)
+    try:
+        if is_ascii and "\n" not in text:
+            pyautogui.write(text, interval=0.005)
+        elif PYPERCLIP_OK:
+            # クリップボード経由で貼り付け（貼り付け後に元の内容を復元）
+            old = ""
+            try:
+                old = pyperclip.paste()
+            except Exception:
+                pass
+            pyperclip.copy(text)
+            time.sleep(0.03)
+            pyautogui.hotkey("ctrl", "v")
+            time.sleep(0.05)
+            try:
+                pyperclip.copy(old)
+            except Exception:
+                pass
+        else:
+            # pyperclip が無い場合は ASCII のみ確実（日本語は化ける可能性）
+            pyautogui.write(text, interval=0.005)
+            print("[TEXT] pyperclip未導入のため非ASCIIは入力できない場合があります")
+        print(f"[TEXT] {text!r}")
+    except Exception as e:
+        print(f"[TEXT ERROR] {e}")
+
 # アクション → pyautogui キー名 変換テーブル
 _ACTION_TO_KEY = {
     "VOLUME_UP":    ("volumeup",   []),
@@ -414,7 +482,20 @@ _ACTION_TO_KEY = {
 }
 
 def send_key(action: str):
-    """pyautogui でキー送信"""
+    """アクション文字列を処理する。プレフィックス付きは専用処理へ、
+    それ以外は pyautogui でキー送信する。"""
+    # ---- プレフィックスアクション ----
+    if action.startswith("URL:"):
+        open_url(action[4:]); return
+    if action.startswith("CMD:"):
+        run_command(action[4:]); return
+    if action.startswith("TEXT:"):
+        type_text(action[5:]); return
+    if action.startswith("APP:"):
+        # アプリ起動は app_launch メッセージ側で処理済み（二重起動を防ぐ）
+        return
+
+    # ---- 通常のキー送信 ----
     if not PYAUTOGUI_OK:
         print(f"[KEY] pyautogui無効: {action}")
         return
