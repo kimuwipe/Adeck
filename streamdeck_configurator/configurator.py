@@ -352,6 +352,42 @@ def find_pico_drive() -> Path | None:
     return None
 
 
+# ===== 設定ファイル ロード/正規化 =====
+def normalize_config(cfg: dict) -> dict:
+    """古い/欠損した設定ファイルに不足フィールドを補完する。"""
+    cfg.setdefault("profiles", list(PROFILES))
+    cfg.setdefault("display", {"brightness": 80})
+    cfg.setdefault("auto_profile",
+                   {"enabled": False, "rules": dict(DEFAULT_AUTO_RULES)})
+    cfg.setdefault("presets", [])
+    for p in range(len(cfg["profiles"])):
+        for sw in cfg["switches"][p]:
+            sw.setdefault("app", "")
+            sw.setdefault("arg", "")
+        for enc in cfg["encoders"][p]:
+            for dk in ("cw", "ccw", "push"):
+                enc.setdefault(f"app_{dk}", "")
+                enc.setdefault(f"arg_{dk}", "")
+    return cfg
+
+
+def load_config() -> dict:
+    """streamdeck_config.json を読み込み（無ければデフォルト）、正規化して返す。"""
+    cfg = default_config()
+    if CONFIG_JSON.exists():
+        try:
+            with open(CONFIG_JSON, encoding="utf-8") as f:
+                cfg = json.load(f)
+        except Exception:
+            pass
+    return normalize_config(cfg)
+
+
+def save_config(cfg: dict):
+    with open(CONFIG_JSON, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+
+
 # ============================================================
 #  GUI アプリ（CustomTkinter・グリッド型）
 # ============================================================
@@ -360,62 +396,28 @@ CARD_SEL  = "#3a3a3a"
 PANEL_BG  = "#242424"
 
 
-class App(ctk.CTk):
-    def __init__(self, on_live_apply=None):
-        super().__init__()
-        ctk.set_appearance_mode("dark")
-        try:
-            ctk.set_default_color_theme("dark-blue")
-        except Exception:
-            pass
+class EditorFrame(ctk.CTkFrame):
+    """グリッド型 設定エディタ（単体ウィンドウにも統合UIのタブにも埋め込める）。
+    cfg は呼び出し側が load_config() で用意した dict を共有参照する。"""
 
-        self.title(APP_TITLE)
-        self.geometry("1080x780")
-        self.minsize(960, 700)
+    def __init__(self, master, cfg, on_live_apply=None):
+        super().__init__(master, fg_color="transparent")
 
         # 常駐エージェント経由でPicoへ即時反映するコールバック（統合UIから渡される）
         self._on_live_apply = on_live_apply
-        self.cfg    = default_config()
+        self.cfg    = cfg
         self._pi    = 0                 # 表示中プロファイル index
         self._sel   = ("sw", 0)         # 選択中の要素
         self._active_slot = None        # 右パレットの割り当て先スロット
         self._sw_buttons = []
         self._enc_cards  = []
 
-        self._load_json()
-        self._normalize_cfg()
         self._build_ui()
         self._select(("sw", 0))
 
     # ---------- JSON ----------
-    def _load_json(self):
-        if CONFIG_JSON.exists():
-            try:
-                with open(CONFIG_JSON, encoding="utf-8") as f:
-                    self.cfg = json.load(f)
-            except Exception:
-                pass
-
     def _save_json(self):
-        with open(CONFIG_JSON, "w", encoding="utf-8") as f:
-            json.dump(self.cfg, f, ensure_ascii=False, indent=2)
-
-    def _normalize_cfg(self):
-        """古い設定ファイルに欠けているフィールドを補完する。"""
-        self.cfg.setdefault("profiles", list(PROFILES))
-        self.cfg.setdefault("display", {"brightness": 80})
-        self.cfg.setdefault("auto_profile",
-                            {"enabled": False, "rules": dict(DEFAULT_AUTO_RULES)})
-        self.cfg.setdefault("presets", [])
-        n = len(self.cfg["profiles"])
-        for p in range(n):
-            for sw in self.cfg["switches"][p]:
-                sw.setdefault("app", "")
-                sw.setdefault("arg", "")
-            for enc in self.cfg["encoders"][p]:
-                for dk in ("cw", "ccw", "push"):
-                    enc.setdefault(f"app_{dk}", "")
-                    enc.setdefault(f"arg_{dk}", "")
+        save_config(self.cfg)
 
     # ---------- スロット（cfg 内の1アクション）参照 ----------
     def _slot_fields(self, slot):
@@ -454,9 +456,9 @@ class App(ctk.CTk):
                       hover_color="#666",
                       command=self._manage_profiles).pack(side="left", padx=6)
 
-        self._conn_lbl = ctk.CTkLabel(top, text="● Pico未接続", text_color="#888")
+        self._conn_lbl = ctk.CTkLabel(top, text="● ドライブ未検出", text_color="#888")
         self._conn_lbl.pack(side="right", padx=14)
-        ctk.CTkButton(top, text="接続確認", width=80,
+        ctk.CTkButton(top, text="ドライブ確認", width=90,
                       command=self._check_pico).pack(side="right", padx=4)
 
         # ---- 本体：左=エディタ / 右=パレット ----
@@ -728,6 +730,48 @@ class App(ctk.CTk):
         win.bind("<KeyPress>", on_key)
         win.after(60, lambda: (win.grab_set(), win.focus_force()))
 
+    # ---------- 入力ダイアログ（CustomTkinter・大きめ） ----------
+    def _ask_string(self, title, prompt, initial=""):
+        """テーマ付きの大きめ文字列入力モーダル。OK=文字列 / キャンセル=None。"""
+        win = ctk.CTkToplevel(self)
+        win.title(title)
+        win.geometry("480x240")
+        win.resizable(False, False)
+        win.transient(self)
+        result = {"value": None}
+
+        ctk.CTkLabel(win, text=prompt, font=ctk.CTkFont(size=15),
+                     wraplength=430, justify="left").pack(padx=24, pady=(26, 12))
+        var = tk.StringVar(value=initial)
+        ent = ctk.CTkEntry(win, textvariable=var, width=420, height=44,
+                           font=ctk.CTkFont(size=17))
+        ent.pack(padx=24)
+
+        btns = ctk.CTkFrame(win, fg_color="transparent")
+        btns.pack(pady=22)
+
+        def _ok():
+            result["value"] = var.get()
+            win.destroy()
+
+        def _cancel():
+            result["value"] = None
+            win.destroy()
+
+        ctk.CTkButton(btns, text="キャンセル", width=130, height=42,
+                      fg_color="#555", hover_color="#666",
+                      font=ctk.CTkFont(size=15), command=_cancel).pack(side="left", padx=10)
+        ctk.CTkButton(btns, text="OK", width=130, height=42,
+                      font=ctk.CTkFont(size=15, weight="bold"),
+                      command=_ok).pack(side="left", padx=10)
+
+        ent.bind("<Return>", lambda e: _ok())
+        win.bind("<Escape>", lambda e: _cancel())
+        ent.select_range(0, "end")
+        win.after(60, lambda: (win.grab_set(), ent.focus_set()))
+        self.wait_window(win)
+        return result["value"]
+
     # ---------- プリセット ----------
     def _save_preset(self):
         if not self._active_slot:
@@ -745,12 +789,12 @@ class App(ctk.CTk):
             messagebox.showwarning(
                 "プリセット", f"プリセットは最大 {MAX_PRESETS} 個までです。")
             return
-        from tkinter import simpledialog
-        name = simpledialog.askstring(
+        name = self._ask_string(
             "プリセット保存", "プリセット名を入力してください:",
-            initialvalue=short_label(key, app, arg), parent=self)
-        if not name:
+            short_label(key, app, arg))
+        if not name or not name.strip():
             return
+        name = name.strip()
         presets.append({"name": name, "key": key, "app": app, "arg": arg})
         self._refresh_presets()
         messagebox.showinfo("プリセット", f"「{name}」を保存しました。")
@@ -968,14 +1012,14 @@ class App(ctk.CTk):
     def _check_pico(self):
         drive = find_pico_drive()
         if drive:
-            self._conn_lbl.configure(text=f"● Pico接続中 ({drive})",
+            self._conn_lbl.configure(text=f"● ドライブ: {drive}",
                                      text_color="#22c55e")
         else:
-            self._conn_lbl.configure(text="● Pico未接続", text_color="#ef4444")
+            self._conn_lbl.configure(text="● ドライブ未検出", text_color="#ef4444")
             messagebox.showwarning(
-                "未接続",
-                "Pico が見つかりません。\n"
-                "MicroPython を書き込み済みの Pico を USB で接続してください。")
+                "未検出",
+                "Pico のドライブ（USBストレージ）が見つかりません。\n"
+                "config.py 書き込みには MicroPython の Pico を USB 接続してください。")
 
     def _save(self):
         self._save_json()
@@ -983,7 +1027,9 @@ class App(ctk.CTk):
 
     def _reset(self):
         if messagebox.askyesno("リセット", "全プロファイルをデフォルトに戻しますか？"):
-            self.cfg = default_config()
+            # cfg は統合UIやエージェントと共有参照のため、差し替えず中身を置換する
+            self.cfg.clear()
+            self.cfg.update(default_config())
             self._pi = 0
             self._refresh_profile_menu()
             self._bright.set(self.cfg["display"]["brightness"])
@@ -1029,6 +1075,23 @@ class App(ctk.CTk):
                 "Pico を再起動すると設定が反映されます。")
         except Exception as e:
             messagebox.showerror("書き込みエラー", str(e))
+
+
+# ===== 単体起動用 薄いラッパー（統合UIからは EditorFrame を直接埋め込む）=====
+class App(ctk.CTk):
+    def __init__(self, on_live_apply=None):
+        super().__init__()
+        ctk.set_appearance_mode("dark")
+        try:
+            ctk.set_default_color_theme("dark-blue")
+        except Exception:
+            pass
+        self.title(APP_TITLE)
+        self.geometry("1080x780")
+        self.minsize(960, 700)
+        cfg = load_config()
+        self.editor = EditorFrame(self, cfg, on_live_apply=on_live_apply)
+        self.editor.pack(fill="both", expand=True)
 
 
 if __name__ == "__main__":

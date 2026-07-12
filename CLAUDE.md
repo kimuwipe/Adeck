@@ -86,9 +86,12 @@ ST7789V2の制御は情報が少なく、長時間デバッグして確定した
 
 ## PC側ファイル構成（streamdeck_configurator/）
 
-- `streamdeck_app.py` — **統合UIメインアプリ**（推奨エントリポイント）
-  - agent（常駐通信）とconfigurator（設定）を統合
-  - タブUI: 状態/プロファイル設定/ディスプレイ/ログ
+- `streamdeck_app.py` — **統合UIメインアプリ**（推奨エントリポイント・CustomTkinter）
+  - agent（常駐通信）とconfigurator（設定）を1ウィンドウに統合
+  - 上部に接続状態・音量/マイク/天気/プロファイルを常時表示
+  - タブUI: 設定（configurator.EditorFrame を埋め込み）/オプション（自動起動・
+    前面アプリ自動切替＋ルール編集ダイアログ）/ログ
+  - cfg は load_config() で1つ用意し editor/agent で共有参照
   - システムトレイ常駐（pystray）、Windows自動起動対応
 - `agent.py` — 常駐エージェント機能（音量/マイク/天気/アプリ取得、キー送信）
 - `configurator.py` — 設定GUI（CustomTkinter・Elgato風グリッドUI）。
@@ -98,7 +101,9 @@ ST7789V2の制御は情報が少なく、長時間デバッグして確定した
   右パレットに表示）、アプリは.lnk/.url ショートカットも登録可（agentはos.startfile起動）。
   プロファイルは可変数（追加/削除/リネーム、最大MAX_PROFILES=8）。profiles/switches/encoders
   を同時に増減し、config_to_py/expand_maps は len(cfg["profiles"]) で動的生成。
-  display側 PROFILE_COLORS[pi] は % len でmodulo化（4色を循環）
+  display側 PROFILE_COLORS[pi] は % len でmodulo化（4色を循環）。
+  グリッドUIは EditorFrame(ctk.CTkFrame) として切り出し済み（統合UIのタブに埋め込み／
+  単体は App(ctk.CTk) ラッパーで起動）。cfg入出力は load_config/save_config/normalize_config
 - `autostart.py` — Windows自動起動の登録/解除
 - `requirements.txt` — 依存: pyserial, pycaw, psutil, comtypes, pyautogui,
   pystray, Pillow, customtkinter（グリッドUI）, pyperclip（任意・日本語TEXT入力）

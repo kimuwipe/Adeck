@@ -1,15 +1,17 @@
-# streamdeck_app.py  v1
-# 統合UI：常駐エージェント（Pico通信）＋ 設定GUI を1つのウィンドウに統合
+# streamdeck_app.py  v2  (統合UI・CustomTkinter)
+# コントローラ（常駐エージェント）と設定エディタを1つのウィンドウに統合。
 #
 # 起動: python streamdeck_app.py
 # 依存: pip install -r requirements.txt
-#   pyserial, pycaw, psutil, comtypes, requests, pyautogui
+#   pyserial, pycaw, psutil, comtypes, pyautogui, pystray, Pillow,
+#   customtkinter, pyperclip
 #
-# 特徴:
-#   - 起動すると裏でPicoと自動接続・常駐（音量/マイク/天気/アプリを送信）
-#   - タブUIで「状態」「プロファイル設定」「ディスプレイ」「ログ」を切替
-#   - スレッド↔GUIは queue で安全に連携
-#   - 接続状態・現在値をリアルタイム表示
+# 構成:
+#   - 上部に接続状態・音量/マイク/天気/プロファイルを常時表示
+#   - タブ「設定」= グリッド型エディタ（configurator.EditorFrame を埋め込み）
+#   - タブ「オプション」= 自動起動・前面アプリ自動切替
+#   - タブ「ログ」= 動作ログ
+#   - システムトレイ常駐、×でトレイ最小化
 
 from __future__ import annotations
 
@@ -17,12 +19,12 @@ import json
 import time
 import threading
 import queue
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
-from pathlib import Path
 
-# ===== agent.py の機能を再利用 =====
-# 同じフォルダの agent.py から関数群を import する
+import tkinter as tk
+import customtkinter as ctk
+from tkinter import messagebox
+
+# ===== agent.py / configurator.py の機能を再利用 =====
 try:
     import agent as ag
     AGENT_OK = True
@@ -30,7 +32,6 @@ except Exception as e:
     AGENT_OK = False
     print(f"[WARN] agent.py を読み込めません: {e}")
 
-# ===== configurator.py の設定機能を再利用 =====
 try:
     import configurator as cfgmod
     CFG_OK = True
@@ -57,58 +58,47 @@ except Exception as e:
     AUTOSTART_OK = False
     print(f"[WARN] autostart.py が読み込めません: {e}")
 
-CONFIG_PATH = "streamdeck_config.json"
-
 
 # ============================================================
-#  常駐エージェント（GUIと連携するスレッド版）
+#  常駐エージェント（GUI連携スレッド版）
 # ============================================================
 class AgentThread:
-    """agent.py の StreamDeckAgent をGUI連携用にラップしたもの。
-    ログとステータスを queue 経由でGUIに渡す。"""
+    """agent.py の機能をGUI連携用にラップ。ログ/状態を queue でGUIへ渡す。
+    cfg は GUI・エディタと共有参照する（自動切替ルール等の同期のため）。"""
 
-    def __init__(self, log_q: queue.Queue, status_q: queue.Queue):
+    def __init__(self, log_q: queue.Queue, status_q: queue.Queue, cfg: dict):
         self._log_q = log_q
         self._status_q = status_q
+        self._cfg = cfg
         self._ser = None
         self._running = False
-        self._config = {}
         self._weather = {}
         self._weather_at = 0
         self._threads = []
-        self._send_lock = threading.Lock()   # info/auto/live の書き込み競合を防ぐ
-        self._current_profile = None      # 現在のプロファイル名（自動切替の重複送信防止）
-        self._auto_enabled = False        # 前面アプリ連動 自動切替の有効/無効
-        self._auto_rules = {}             # {exe名(小文字): プロファイル名}
-        self._load_config()
+        self._send_lock = threading.Lock()
+        self._current_profile = None
+        self._auto_enabled = False
+        self._auto_rules = {}
         self._load_auto_profile()
 
-    # ---- 自動切替ルールの読み込み ----
+    # ---- ログ/ステータス ----
+    def _log(self, msg: str):
+        self._log_q.put(f"[{time.strftime('%H:%M:%S')}] {msg}")
+
+    def _status(self, **kwargs):
+        self._status_q.put(kwargs)
+
+    # ---- 自動切替設定 ----
     def _load_auto_profile(self):
-        ap = self._config.get("auto_profile") or {}
+        ap = (self._cfg or {}).get("auto_profile") or {}
         self._auto_enabled = bool(ap.get("enabled", False))
         rules = ap.get("rules")
         if not rules and CFG_OK:
             rules = cfgmod.DEFAULT_AUTO_RULES
         self._auto_rules = {str(k).lower(): v for k, v in (rules or {}).items()}
 
-    # ---- ログ/ステータス送信 ----
-    def _log(self, msg: str):
-        ts = time.strftime("%H:%M:%S")
-        self._log_q.put(f"[{ts}] {msg}")
-
-    def _status(self, **kwargs):
-        self._status_q.put(kwargs)
-
-    # ---- 設定読み込み ----
-    def _load_config(self):
-        try:
-            with open(CONFIG_PATH, encoding="utf-8") as f:
-                self._config = json.load(f)
-            self._log(f"設定 {CONFIG_PATH} を読み込みました")
-        except FileNotFoundError:
-            self._log(f"設定ファイルが無いのでデフォルトで動作します")
-            self._config = {}
+    def reload_config(self):
+        self._load_auto_profile()
 
     # ---- 接続 ----
     def _connect(self) -> bool:
@@ -141,7 +131,7 @@ class AgentThread:
                 self._ser = None
                 self._status(connected=False, port="—")
 
-    # ---- 受信ループ ----
+    # ---- 受信 ----
     def _receive_loop(self):
         while self._running:
             if not self._ser or not self._ser.is_open:
@@ -180,7 +170,7 @@ class AgentThread:
             self._log("Pico: ライブ設定を反映しました")
         elif t == "profile_change":
             pf = msg.get("profile", "?")
-            self._current_profile = pf     # 手動(SW1)切替に追従
+            self._current_profile = pf
             self._log(f"プロファイル → {pf}")
             self._status(profile=pf)
         elif t == "button":
@@ -198,7 +188,7 @@ class AgentThread:
                 if action and AGENT_OK:
                     ag.send_key(action)
 
-    # ---- 情報送信ループ ----
+    # ---- 情報送信 ----
     def _get_weather_cached(self) -> dict:
         now = time.time()
         interval = getattr(ag, "WEATHER_INTERVAL", 600) if AGENT_OK else 600
@@ -206,7 +196,7 @@ class AgentThread:
             if AGENT_OK:
                 self._weather = ag.get_weather()
                 self._weather_at = now
-                self._log(f"天気更新: {self._weather.get('desc','?')}")
+                self._log(f"天気更新: {self._weather.get('desc', '?')}")
         return self._weather
 
     def _info_loop(self):
@@ -224,53 +214,18 @@ class AgentThread:
             mic = ag.get_mic_volume()
             apps = ag.get_running_apps()
             wx = self._get_weather_cached()
-            payload = {
-                "type": "info",
-                "volume": vol,
-                "mic_volume": mic,
-                "apps": apps,
-                "weather": wx,
-            }
-            self._send(payload)
-            # GUIのステータス更新
+            self._send({"type": "info", "volume": vol, "mic_volume": mic,
+                        "apps": apps, "weather": wx})
             self._status(volume=vol, mic_volume=mic,
-                         weather=wx.get("desc", "—"),
-                         temp=wx.get("temp", "—"))
+                         weather=wx.get("desc", "—"), temp=wx.get("temp", "—"))
             time.sleep(interval)
 
-    # ---- 起動/停止 ----
-    def start(self):
-        if self._running:
-            return
-        self._running = True
-        self._connect()
-        rx = threading.Thread(target=self._receive_loop, daemon=True)
-        info = threading.Thread(target=self._info_loop, daemon=True)
-        auto = threading.Thread(target=self._auto_profile_loop, daemon=True)
-        rx.start()
-        info.start()
-        auto.start()
-        self._threads = [rx, info, auto]
-        self._log("エージェント開始")
-
-    def stop(self):
-        self._running = False
-        if self._ser and self._ser.is_open:
-            self._ser.close()
-        self._status(connected=False, port="—")
-        self._log("エージェント停止")
-
-    def reload_config(self):
-        self._load_config()
-        self._load_auto_profile()
-
-    # ---- ライブ設定反映（config.py書き込みなしで即反映） ----
+    # ---- ライブ設定反映 ----
     def send_live_config(self, cfg: dict) -> bool:
         if not (self._ser and self._ser.is_open):
             self._log("Pico未接続のためライブ反映できません")
             return False
         if not CFG_OK:
-            self._log("configurator.py が無いためライブ反映できません")
             return False
         try:
             profiles, sm, em = cfgmod.expand_maps(cfg)
@@ -280,11 +235,7 @@ class AgentThread:
         self._send({"type": "config", "profiles": profiles,
                     "switches": sm, "encoders": em})
         self._log("ライブ設定を送信しました（書込なし即反映）")
-        # 自動切替ルールも最新化
-        ap = cfg.get("auto_profile") or {}
-        rules = ap.get("rules") or {}
-        if rules:
-            self._auto_rules = {str(k).lower(): v for k, v in rules.items()}
+        self._load_auto_profile()   # ルール等も最新化
         return True
 
     # ---- 前面アプリ連動 自動プロファイル切替 ----
@@ -297,7 +248,6 @@ class AgentThread:
             self._send({"type": "set_profile", "profile": name})
 
     def _foreground_proc_name(self):
-        """最前面ウィンドウのプロセス実行ファイル名を返す（Windows専用）"""
         try:
             import ctypes
             import psutil
@@ -314,8 +264,6 @@ class AgentThread:
             return None
 
     def _auto_profile_loop(self):
-        """1秒ごとに前面アプリを監視し、ルールに一致したらプロファイルを切替える。
-        前面アプリが変わった時だけ判定するので手動切替と競合しにくい。"""
         last_proc = None
         while self._running:
             if not self._auto_enabled:
@@ -332,312 +280,240 @@ class AgentThread:
                     self._log(f"自動切替: {name} → {target}")
             time.sleep(1.0)
 
+    # ---- 起動/停止 ----
+    def start(self):
+        if self._running:
+            return
+        self._running = True
+        self._connect()
+        rx = threading.Thread(target=self._receive_loop, daemon=True)
+        info = threading.Thread(target=self._info_loop, daemon=True)
+        auto = threading.Thread(target=self._auto_profile_loop, daemon=True)
+        rx.start(); info.start(); auto.start()
+        self._threads = [rx, info, auto]
+        self._log("エージェント開始")
+
+    def stop(self):
+        self._running = False
+        if self._ser and self._ser.is_open:
+            self._ser.close()
+        self._status(connected=False, port="—")
+        self._log("エージェント停止")
+
 
 # ============================================================
-#  統合GUIアプリ
+#  統合GUIアプリ（CustomTkinter）
 # ============================================================
-class StreamDeckApp(tk.Tk):
+class StreamDeckApp(ctk.CTk):
     def __init__(self):
         super().__init__()
+        ctk.set_appearance_mode("dark")
+        try:
+            ctk.set_default_color_theme("dark-blue")
+        except Exception:
+            pass
         self.title("StreamDeck Controller")
-        self.geometry("640x560")
+        self.geometry("1180x860")
+        self.minsize(1000, 760)
 
         self._log_q = queue.Queue()
         self._status_q = queue.Queue()
-        self._agent = AgentThread(self._log_q, self._status_q)
 
-        # 設定データ
-        self._cfg = self._load_config()
+        # 設定（エディタ・エージェントで共有）
+        self._cfg = cfgmod.load_config() if CFG_OK else {}
+        self._agent = AgentThread(self._log_q, self._status_q, self._cfg)
 
-        # 状態フラグ
         self._connected = False
         self._tray_icon = None
 
         self._build_ui()
         self._poll_queues()
-
-        # 起動時に自動でエージェント開始
         self.after(500, self._agent.start)
 
-        # トレイアイコン起動
         if TRAY_OK:
             self._setup_tray()
-
-        # ×ボタンはトレイに最小化（TRAY_OKなら）
-        if TRAY_OK:
             self.protocol("WM_DELETE_WINDOW", self._hide_to_tray)
         else:
             self.protocol("WM_DELETE_WINDOW", self._on_close)
 
-    # ---- 設定ロード ----
-    def _load_config(self) -> dict:
-        try:
-            with open(CONFIG_PATH, encoding="utf-8") as f:
-                cfg = json.load(f)
-        except FileNotFoundError:
-            cfg = cfgmod.default_config() if CFG_OK else {}
-        # auto_profile が無い古い設定にデフォルトを補完
-        if "auto_profile" not in cfg:
-            default_rules = dict(cfgmod.DEFAULT_AUTO_RULES) if CFG_OK else {}
-            cfg["auto_profile"] = {"enabled": False, "rules": default_rules}
-        return cfg
-
-    def _save_config(self):
-        try:
-            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-                json.dump(self._cfg, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            messagebox.showerror("保存エラー", str(e))
-
-    # ---- UI構築 ----
+    # ---- UI ----
     def _build_ui(self):
-        nb = ttk.Notebook(self)
-        nb.pack(fill="both", expand=True, padx=8, pady=8)
+        # ===== 上部ステータスバー =====
+        bar = ctk.CTkFrame(self, corner_radius=0)
+        bar.pack(fill="x")
 
-        self.tab_status = ttk.Frame(nb)
-        self.tab_profile = ttk.Frame(nb)
-        self.tab_display = ttk.Frame(nb)
-        self.tab_log = ttk.Frame(nb)
+        self.lbl_conn = ctk.CTkLabel(bar, text="● 未接続",
+                                     font=ctk.CTkFont(size=15, weight="bold"),
+                                     text_color="#888")
+        self.lbl_conn.pack(side="left", padx=(14, 8), pady=10)
+        self.lbl_port = ctk.CTkLabel(bar, text="ポート: —", text_color="#aaa")
+        self.lbl_port.pack(side="left", padx=6)
 
-        nb.add(self.tab_status, text="状態")
-        nb.add(self.tab_profile, text="プロファイル設定")
-        nb.add(self.tab_display, text="ディスプレイ")
-        nb.add(self.tab_log, text="ログ")
+        # 接続操作
+        ctk.CTkButton(bar, text="再接続", width=70, fg_color="#555",
+                      hover_color="#666", command=self._reconnect).pack(side="right", padx=(4, 12))
+        ctk.CTkButton(bar, text="切断", width=64, fg_color="#555",
+                      hover_color="#666", command=self._agent.stop).pack(side="right", padx=4)
+        ctk.CTkButton(bar, text="接続", width=64,
+                      command=self._agent.start).pack(side="right", padx=4)
 
-        self._build_status_tab()
-        self._build_profile_tab()
-        self._build_display_tab()
-        self._build_log_tab()
+        # 値表示 ＋ タブ切替（同じ行の右側に配置）
+        vals = ctk.CTkFrame(self, fg_color="transparent")
+        vals.pack(fill="x", padx=14, pady=(4, 2))
+        self._tabsel = ctk.CTkSegmentedButton(
+            vals, values=["設定", "オプション", "ログ"], command=self._select_tab)
+        self._tabsel.set("設定")
+        self._tabsel.pack(side="right")
+        self.lbl_vol = ctk.CTkLabel(vals, text="音量: —")
+        self.lbl_mic = ctk.CTkLabel(vals, text="マイク: —")
+        self.lbl_wx = ctk.CTkLabel(vals, text="天気: —")
+        self.lbl_prof = ctk.CTkLabel(vals, text="プロファイル: —",
+                                     font=ctk.CTkFont(weight="bold"))
+        for w in (self.lbl_vol, self.lbl_mic, self.lbl_wx, self.lbl_prof):
+            w.pack(side="left", padx=(0, 20))
 
-    # ---- 状態タブ ----
-    def _build_status_tab(self):
-        f = self.tab_status
-        pad = {"padx": 10, "pady": 6}
+        # ===== コンテンツ（自前タブ切替でページを出し分け）=====
+        container = ctk.CTkFrame(self, fg_color="transparent")
+        container.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        self._pages = {}
 
-        # 接続状態
-        self.var_conn = tk.StringVar(value="● 未接続")
-        self.lbl_conn = tk.Label(f, textvariable=self.var_conn,
-                                 font=("", 14, "bold"), fg="gray")
-        self.lbl_conn.grid(row=0, column=0, columnspan=2, sticky="w", **pad)
+        page_edit = ctk.CTkFrame(container, fg_color="transparent")
+        if CFG_OK:
+            self.editor = cfgmod.EditorFrame(
+                page_edit, self._cfg, on_live_apply=self._on_live_apply)
+            self.editor.pack(fill="both", expand=True)
+        else:
+            ctk.CTkLabel(page_edit, text="configurator.py を読み込めませんでした",
+                         text_color="#ef4444").pack(pady=20)
+        self._pages["設定"] = page_edit
 
-        self.var_port = tk.StringVar(value="ポート: —")
-        tk.Label(f, textvariable=self.var_port).grid(
-            row=1, column=0, columnspan=2, sticky="w", **pad)
+        page_opt = ctk.CTkFrame(container, fg_color="transparent")
+        self._build_options_tab(page_opt)
+        self._pages["オプション"] = page_opt
 
-        ttk.Separator(f, orient="horizontal").grid(
-            row=2, column=0, columnspan=2, sticky="ew", pady=8)
+        page_log = ctk.CTkFrame(container, fg_color="transparent")
+        self._build_log_tab(page_log)
+        self._pages["ログ"] = page_log
 
-        # リアルタイム値
-        self.var_vol = tk.StringVar(value="音量: —")
-        self.var_mic = tk.StringVar(value="マイク: —")
-        self.var_wx = tk.StringVar(value="天気: —")
-        self.var_profile = tk.StringVar(value="プロファイル: —")
+        self._select_tab("設定")
 
-        for i, v in enumerate([self.var_vol, self.var_mic,
-                               self.var_wx, self.var_profile]):
-            tk.Label(f, textvariable=v, font=("", 11)).grid(
-                row=3+i, column=0, sticky="w", **pad)
+    def _select_tab(self, name):
+        for fr in self._pages.values():
+            fr.pack_forget()
+        self._pages[name].pack(fill="both", expand=True)
 
-        ttk.Separator(f, orient="horizontal").grid(
-            row=7, column=0, columnspan=2, sticky="ew", pady=8)
+    def _build_options_tab(self, f):
+        pad = {"padx": 16, "pady": 10}
 
-        # 接続/切断ボタン
-        btnf = tk.Frame(f)
-        btnf.grid(row=8, column=0, columnspan=2, sticky="w", **pad)
-        ttk.Button(btnf, text="接続", command=self._agent.start).pack(side="left", padx=4)
-        ttk.Button(btnf, text="切断", command=self._agent.stop).pack(side="left", padx=4)
-        ttk.Button(btnf, text="再接続", command=self._reconnect).pack(side="left", padx=4)
-
-        ttk.Separator(f, orient="horizontal").grid(
-            row=9, column=0, columnspan=2, sticky="ew", pady=8)
-
-        # 自動起動チェックボックス
+        # 自動起動
         init_auto = autostart.is_enabled() if AUTOSTART_OK else False
         self.var_autostart = tk.BooleanVar(value=init_auto)
-        chk = ttk.Checkbutton(
-            f, text="Windows起動時に自動で起動する",
-            variable=self.var_autostart, command=self._toggle_autostart)
-        chk.grid(row=10, column=0, columnspan=2, sticky="w", **pad)
+        sw1 = ctk.CTkSwitch(f, text="Windows起動時に自動で起動する",
+                            variable=self.var_autostart,
+                            command=self._toggle_autostart)
+        sw1.pack(anchor="w", **pad)
         if not AUTOSTART_OK:
-            chk.config(state="disabled")
+            sw1.configure(state="disabled")
 
-        # 前面アプリ連動 自動プロファイル切替
-        init_auto = bool(self._cfg.get("auto_profile", {}).get("enabled", False))
-        self.var_autoprofile = tk.BooleanVar(value=init_auto)
-        self._agent.set_auto_enabled(init_auto)
-        autof = tk.Frame(f)
-        autof.grid(row=11, column=0, columnspan=2, sticky="w", **pad)
-        ttk.Checkbutton(
-            autof, text="前面アプリで自動プロファイル切替",
-            variable=self.var_autoprofile,
-            command=self._toggle_autoprofile).pack(side="left")
-        ttk.Button(autof, text="ルール編集",
-                   command=self._edit_auto_rules).pack(side="left", padx=8)
+        # 前面アプリ連動
+        init_ap = bool(self._cfg.get("auto_profile", {}).get("enabled", False))
+        self.var_autoprofile = tk.BooleanVar(value=init_ap)
+        self._agent.set_auto_enabled(init_ap)
+        apf = ctk.CTkFrame(f, fg_color="transparent")
+        apf.pack(anchor="w", **pad)
+        ctk.CTkSwitch(apf, text="前面アプリで自動プロファイル切替",
+                      variable=self.var_autoprofile,
+                      command=self._toggle_autoprofile).pack(side="left")
+        ctk.CTkButton(apf, text="ルール編集", width=100, fg_color="#555",
+                      hover_color="#666",
+                      command=self._edit_auto_rules).pack(side="left", padx=12)
 
-        # トレイ常駐の説明
-        note = "※ ×ボタンでタスクトレイに最小化します（常駐継続）" \
-            if TRAY_OK else "※ pystray未導入のためトレイ常駐は無効です"
-        tk.Label(f, text=note, fg="gray").grid(
-            row=12, column=0, columnspan=2, sticky="w", **pad)
+        note = ("※ ×ボタンでタスクトレイに最小化して常駐します"
+                if TRAY_OK else "※ pystray未導入のためトレイ常駐は無効です")
+        ctk.CTkLabel(f, text=note, text_color="#888").pack(anchor="w", **pad)
 
-    def _toggle_autoprofile(self):
-        en = self.var_autoprofile.get()
-        self._agent.set_auto_enabled(en)
-        self._cfg.setdefault("auto_profile", {})["enabled"] = en
-        self._save_config()
+    def _build_log_tab(self, f):
+        self.txt_log = ctk.CTkTextbox(f, font=ctk.CTkFont(family="Consolas", size=12))
+        self.txt_log.pack(fill="both", expand=True, padx=8, pady=8)
+        ctk.CTkButton(f, text="クリア", width=80, command=self._clear_log
+                      ).pack(anchor="e", padx=8, pady=(0, 8))
 
-    def _edit_auto_rules(self):
-        """自動切替ルール（JSON）を既定のエディタで開く。編集後は再読込で反映。"""
-        import os
-        self._save_config()   # 最新状態をファイルに落としてから開く
-        try:
-            os.startfile(CONFIG_PATH)   # type: ignore[attr-defined]
-            messagebox.showinfo(
-                "ルール編集",
-                "streamdeck_config.json の \"auto_profile\" → \"rules\" を編集してください。\n"
-                "（\"プロセス名.exe\": \"プロファイル名\" の形式）\n\n"
-                "編集・保存したら「プロファイル設定」タブの「設定を再読込」を押すと反映されます。")
-        except Exception as e:
-            messagebox.showerror("ルール編集", str(e))
-
+    # ---- オプション操作 ----
     def _toggle_autostart(self):
         if not AUTOSTART_OK:
             return
         ok = autostart.toggle(self.var_autostart.get())
-        if ok:
-            state = "登録" if self.var_autostart.get() else "解除"
-            messagebox.showinfo("自動起動", f"自動起動を{state}しました")
-        else:
+        if not ok:
             messagebox.showerror("自動起動", "設定に失敗しました")
-            # 失敗時はチェックを戻す
             self.var_autostart.set(autostart.is_enabled())
+
+    def _toggle_autoprofile(self):
+        en = bool(self.var_autoprofile.get())
+        self._agent.set_auto_enabled(en)
+        self._cfg.setdefault("auto_profile", {})["enabled"] = en
+        if CFG_OK:
+            cfgmod.save_config(self._cfg)
+
+    def _edit_auto_rules(self):
+        """自動切替ルール（プロセス名→プロファイル）をJSONで編集するダイアログ。"""
+        win = ctk.CTkToplevel(self)
+        win.title("自動切替ルール")
+        win.geometry("480x460")
+        win.transient(self)
+        ctk.CTkLabel(win, text='"プロセス名.exe": "プロファイル名" の形式（JSON）',
+                     font=ctk.CTkFont(size=12)).pack(padx=12, pady=(12, 4))
+        box = ctk.CTkTextbox(win, font=ctk.CTkFont(family="Consolas", size=13))
+        box.pack(fill="both", expand=True, padx=12, pady=6)
+        rules = self._cfg.get("auto_profile", {}).get("rules", {})
+        box.insert("1.0", json.dumps(rules, ensure_ascii=False, indent=2))
+
+        def _save():
+            try:
+                new = json.loads(box.get("1.0", "end"))
+                if not isinstance(new, dict):
+                    raise ValueError("辞書(JSONオブジェクト)である必要があります")
+            except Exception as e:
+                messagebox.showerror("ルール編集", f"JSONエラー:\n{e}")
+                return
+            self._cfg.setdefault("auto_profile", {})["rules"] = new
+            if CFG_OK:
+                cfgmod.save_config(self._cfg)
+            self._agent.reload_config()
+            win.destroy()
+            messagebox.showinfo("ルール編集", "自動切替ルールを更新しました。")
+
+        btns = ctk.CTkFrame(win, fg_color="transparent")
+        btns.pack(pady=10)
+        ctk.CTkButton(btns, text="キャンセル", width=110, fg_color="#555",
+                      hover_color="#666", command=win.destroy).pack(side="left", padx=8)
+        ctk.CTkButton(btns, text="保存", width=110, command=_save).pack(side="left", padx=8)
+        win.after(60, lambda: (win.grab_set(), win.focus_force()))
+
+    def _clear_log(self):
+        self.txt_log.delete("1.0", "end")
+
+    def _append_log(self, line: str):
+        self.txt_log.insert("end", line + "\n")
+        self.txt_log.see("end")
+
+    # ---- ライブ反映（エディタから呼ばれる）----
+    def _on_live_apply(self, cfg: dict) -> bool:
+        return self._agent.send_live_config(cfg)
 
     def _reconnect(self):
         self._agent.stop()
         self.after(500, self._agent.start)
 
-    # ---- プロファイルタブ（configuratorの簡易版を埋め込み） ----
-    def _build_profile_tab(self):
-        f = self.tab_profile
-        if not CFG_OK:
-            tk.Label(f, text="configurator.py が読み込めないため\n設定機能は利用できません",
-                     fg="red").pack(padx=20, pady=20)
-            return
-
-        info = tk.Label(
-            f,
-            text="キー割り当ての詳細設定は configurator を使います。\n"
-                 "ここではプロファイル一覧の確認と、設定ファイルの再読込ができます。",
-            justify="left")
-        info.pack(anchor="w", padx=12, pady=8)
-
-        # プロファイル一覧表示
-        profiles = self._cfg.get("profiles", [])
-        lf = ttk.LabelFrame(f, text="プロファイル")
-        lf.pack(fill="x", padx=12, pady=6)
-        for i, p in enumerate(profiles):
-            tk.Label(lf, text=f"{i+1}. {p}").pack(anchor="w", padx=10, pady=2)
-
-        # ボタン
-        btnf = tk.Frame(f)
-        btnf.pack(anchor="w", padx=12, pady=10)
-        ttk.Button(btnf, text="設定エディタを開く",
-                   command=self._open_configurator).pack(side="left", padx=4)
-        ttk.Button(btnf, text="設定を再読込",
-                   command=self._reload_config).pack(side="left", padx=4)
-        ttk.Button(btnf, text="ライブ反映（書込なし）",
-                   command=self._live_reflect).pack(side="left", padx=4)
-
-        tk.Label(f, text="※「ライブ反映」は保存済み設定をPicoへ即送信します"
-                        "（config.py書き込み・再起動は不要）",
-                 fg="gray", justify="left").pack(anchor="w", padx=12)
-
-    def _open_configurator(self):
-        """設定エディタ（configurator.py）を別プロセスで開く。
-        CustomTkinter(CTk) の root と本アプリ(tk.Tk)の root 二重化を避けるため
-        別プロセスにする。編集・保存後は「設定を再読込」→「ライブ反映」で反映する。"""
-        import subprocess
-        import sys
-        import os
-        editor = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                              "configurator.py")
-        try:
-            subprocess.Popen([sys.executable, editor],
-                             cwd=os.path.dirname(editor))
-        except Exception as e:
-            messagebox.showerror("エラー", f"設定エディタを開けません:\n{e}")
-
-    def _live_reflect(self):
-        """保存済み設定を読み直してPicoへライブ送信する"""
-        self._cfg = self._load_config()
-        self._agent.reload_config()
-        if self._agent.send_live_config(self._cfg):
-            messagebox.showinfo("ライブ反映",
-                "Picoへ即時反映しました（config.py書き込み・再起動は不要）。")
-        else:
-            messagebox.showwarning("ライブ反映",
-                "Picoへ反映できませんでした。接続状態を確認してください。")
-
-    def _reload_config(self):
-        self._cfg = self._load_config()
-        self._agent.reload_config()
-        messagebox.showinfo("再読込", "設定を再読込しました")
-
-    # ---- ディスプレイタブ ----
-    def _build_display_tab(self):
-        f = self.tab_display
-        tk.Label(f, text="ディスプレイの明るさ", font=("", 11)).pack(
-            anchor="w", padx=12, pady=8)
-
-        cur = self._cfg.get("display", {}).get("brightness", 80)
-        self.var_bright = tk.IntVar(value=cur)
-        scale = ttk.Scale(f, from_=0, to=100, orient="horizontal",
-                          variable=self.var_bright, length=300,
-                          command=lambda v: self.var_bright_lbl.set(
-                              f"{int(float(v))}%"))
-        scale.pack(anchor="w", padx=12)
-
-        self.var_bright_lbl = tk.StringVar(value=f"{cur}%")
-        tk.Label(f, textvariable=self.var_bright_lbl).pack(anchor="w", padx=12)
-
-        tk.Label(f, text="※ 変更を反映するには Pico への書き込みが必要です",
-                 fg="gray").pack(anchor="w", padx=12, pady=8)
-
-    # ---- ログタブ ----
-    def _build_log_tab(self):
-        f = self.tab_log
-        self.txt_log = tk.Text(f, height=20, wrap="word", state="disabled",
-                               font=("Consolas", 9))
-        self.txt_log.pack(fill="both", expand=True, padx=8, pady=8)
-
-        btnf = tk.Frame(f)
-        btnf.pack(anchor="e", padx=8, pady=4)
-        ttk.Button(btnf, text="クリア", command=self._clear_log).pack(side="right")
-
-    def _clear_log(self):
-        self.txt_log.config(state="normal")
-        self.txt_log.delete("1.0", "end")
-        self.txt_log.config(state="disabled")
-
-    def _append_log(self, line: str):
-        self.txt_log.config(state="normal")
-        self.txt_log.insert("end", line + "\n")
-        self.txt_log.see("end")
-        self.txt_log.config(state="disabled")
-
-    # ---- queue ポーリング（GUIスレッドで実行） ----
+    # ---- queue ポーリング ----
     def _poll_queues(self):
-        # ログ
         while not self._log_q.empty():
             try:
                 self._append_log(self._log_q.get_nowait())
             except queue.Empty:
                 break
-        # ステータス
         while not self._status_q.empty():
             try:
-                st = self._status_q.get_nowait()
-                self._apply_status(st)
+                self._apply_status(self._status_q.get_nowait())
             except queue.Empty:
                 break
         self.after(200, self._poll_queues)
@@ -646,38 +522,32 @@ class StreamDeckApp(tk.Tk):
         if "connected" in st:
             self._connected = st["connected"]
             if st["connected"]:
-                self.var_conn.set("● 接続中")
-                self.lbl_conn.config(fg="green")
+                self.lbl_conn.configure(text="● 接続中", text_color="#22c55e")
             else:
-                self.var_conn.set("● 未接続")
-                self.lbl_conn.config(fg="gray")
-            # トレイアイコンの色も更新
+                self.lbl_conn.configure(text="● 未接続", text_color="#888")
             if TRAY_OK:
                 self._update_tray_icon()
         if "port" in st:
-            self.var_port.set(f"ポート: {st['port']}")
+            self.lbl_port.configure(text=f"ポート: {st['port']}")
         if "volume" in st:
-            self.var_vol.set(f"音量: {st['volume']}%")
+            self.lbl_vol.configure(text=f"音量: {st['volume']}%")
         if "mic_volume" in st:
-            self.var_mic.set(f"マイク: {st['mic_volume']}%")
+            self.lbl_mic.configure(text=f"マイク: {st['mic_volume']}%")
         if "weather" in st:
-            temp = st.get("temp", "—")
-            self.var_wx.set(f"天気: {st['weather']} {temp}℃")
+            self.lbl_wx.configure(text=f"天気: {st['weather']} {st.get('temp', '—')}℃")
         if "profile" in st:
-            self.var_profile.set(f"プロファイル: {st['profile']}")
+            self.lbl_prof.configure(text=f"プロファイル: {st['profile']}")
 
     # ---- システムトレイ ----
     def _make_tray_image(self, connected: bool):
-        """トレイアイコン画像を生成（接続=緑, 未接続=灰）"""
         img = Image.new("RGB", (64, 64), (40, 40, 40))
         d = ImageDraw.Draw(img)
-        # 外枠（StreamDeck風の四角ボタン配置イメージ）
         color = (60, 200, 90) if connected else (130, 130, 130)
         for gx in range(2):
             for gy in range(2):
                 x = 12 + gx * 26
                 y = 12 + gy * 26
-                d.rounded_rectangle([x, y, x+18, y+18], radius=4, fill=color)
+                d.rounded_rectangle([x, y, x + 18, y + 18], radius=4, fill=color)
         return img
 
     def _setup_tray(self):
@@ -690,12 +560,8 @@ class StreamDeckApp(tk.Tk):
             pystray.MenuItem("終了", self._quit_from_tray),
         )
         self._tray_icon = pystray.Icon(
-            "streamdeck",
-            self._make_tray_image(False),
-            "StreamDeck Controller",
-            menu,
-        )
-        # トレイは別スレッドで動かす
+            "streamdeck", self._make_tray_image(False),
+            "StreamDeck Controller", menu)
         threading.Thread(target=self._tray_icon.run, daemon=True).start()
 
     def _update_tray_icon(self):
@@ -703,11 +569,9 @@ class StreamDeckApp(tk.Tk):
             self._tray_icon.icon = self._make_tray_image(self._connected)
 
     def _hide_to_tray(self):
-        """×ボタン: ウィンドウを隠してトレイに常駐"""
         self.withdraw()
 
     def _show_window(self, icon=None, item=None):
-        """トレイから表示"""
         self.after(0, self.deiconify)
         self.after(0, self.lift)
 
