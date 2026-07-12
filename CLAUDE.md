@@ -78,6 +78,11 @@ ST7789V2の制御は情報が少なく、長時間デバッグして確定した
   `select.poll()` でノンブロッキング化（これをしないとPC未接続時に停止）。
 - **共有バッファ描画**: 2画面が同じバッファを共有するため、
   「draw_page(lcd0)→show()→draw_page(lcd1)→show()」と1画面ずつ処理する。
+- **タッチ操作**: 画面タップ＝次プロファイル(プリセット)へ切替、スワイプ左右＝ページ送り。
+  各ページ右上に現在プロファイルのバッジを表示（display_pages._profile_badge、draw_pageで全ページ共通描画）。
+  タップ領域を座標で限定しないのは、タッチ座標のスケール/縦軸向きが実機依存で未確定なため
+  （全画面タップにして座標マッピング非依存で確実動作にした）。8x8フォントはASCIIのみ→
+  日本語プロファイル名は 'P{n}' にフォールバック表示。
 
 ## PC側ファイル構成（streamdeck_configurator/）
 
@@ -88,7 +93,9 @@ ST7789V2の制御は情報が少なく、長時間デバッグして確定した
 - `agent.py` — 常駐エージェント機能（音量/マイク/天気/アプリ取得、キー送信）
 - `configurator.py` — 設定GUI（CustomTkinter・Elgato風グリッドUI）。
   スイッチ2×4／エンコーダ4個をボタングリッド表示、クリックで選択→下パネルで設定、
-  右パレットからアクション割り当て。統合UIからは別プロセスで起動（CTk/tk root二重化回避）
+  右パレットからアクション割り当て。統合UIからは別プロセスで起動（CTk/tk root二重化回避）。
+  キー記録（⌨ボタンで任意コンビを捕捉→"KEY:ctrl c"）、プリセット保存/管理（最大32・
+  右パレットに表示）、アプリは.lnk/.url ショートカットも登録可（agentはos.startfile起動）
 - `autostart.py` — Windows自動起動の登録/解除
 - `requirements.txt` — 依存: pyserial, pycaw, psutil, comtypes, pyautogui,
   pystray, Pillow, customtkinter（グリッドUI）, pyperclip（任意・日本語TEXT入力）

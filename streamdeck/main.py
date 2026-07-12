@@ -212,14 +212,19 @@ while True:
         elif t == "config":
             apply_live_config(msg)
 
-    # ── タッチ（スワイプ・タップでページ切り替え）
+    # ── タッチ
+    #   タップ → 次のプロファイル（プリセット）へ切替（各画面右上のバッジ表示）
+    #   スワイプ左右 → ページ送り
     g0, g1 = touch_mgr.update_all()
-    if g0 == GESTURE_SWIPE_LEFT or g0 == GESTURE_TAP:
+    if g0 == GESTURE_TAP or g1 == GESTURE_TAP:
+        next_profile()
+
+    if g0 == GESTURE_SWIPE_LEFT:
         page_next(0)
     elif g0 == GESTURE_SWIPE_RIGHT:
         page_prev(0)
 
-    if g1 == GESTURE_SWIPE_LEFT or g1 == GESTURE_TAP:
+    if g1 == GESTURE_SWIPE_LEFT:
         page_next(1)
     elif g1 == GESTURE_SWIPE_RIGHT:
         page_prev(1)

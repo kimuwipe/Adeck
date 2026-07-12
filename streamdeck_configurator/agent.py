@@ -12,6 +12,7 @@ import serial
 import serial.tools.list_ports
 import json
 import time
+import os
 import subprocess
 import threading
 import psutil
@@ -216,11 +217,14 @@ def find_pico_port() -> str | None:
 
 # ===== アプリ起動 =====
 def launch_app(exe_path: str):
+    """アプリ/ショートカット等を起動する。
+    os.startfile は .exe だけでなく .lnk / .url / フォルダ / ドキュメントも
+    既定の方法で開けるため、ショートカット登録に対応できる（Windows専用）。"""
     try:
         if exe_path == "calc.exe":
             subprocess.Popen("calc.exe", shell=True)
         else:
-            subprocess.Popen([exe_path], shell=False)
+            os.startfile(exe_path)
         print(f"[LAUNCH] {exe_path}")
     except Exception as e:
         print(f"[LAUNCH ERROR] {e}")
@@ -481,10 +485,32 @@ _ACTION_TO_KEY = {
     "F13": ("f13",[]),  "F14": ("f14",[]),  "F15": ("f15",[]),
 }
 
+def _send_hotkey(combo: str):
+    """"ctrl shift c" のような空白区切りの修飾＋キーを pyautogui で送る。
+    最後のトークンがキー、それ以外が修飾キー。"""
+    if not PYAUTOGUI_OK:
+        print(f"[HOTKEY] pyautogui無効: {combo}")
+        return
+    parts = combo.split()
+    if not parts:
+        return
+    *mods, key = parts
+    try:
+        if mods:
+            pyautogui.hotkey(*mods, key)
+        else:
+            pyautogui.press(key)
+        print(f"[HOTKEY] {'+'.join(parts)}")
+    except Exception as e:
+        print(f"[HOTKEY ERROR] {e}")
+
+
 def send_key(action: str):
     """アクション文字列を処理する。プレフィックス付きは専用処理へ、
     それ以外は pyautogui でキー送信する。"""
     # ---- プレフィックスアクション ----
+    if action.startswith("KEY:"):
+        _send_hotkey(action[4:]); return
     if action.startswith("URL:"):
         open_url(action[4:]); return
     if action.startswith("CMD:"):

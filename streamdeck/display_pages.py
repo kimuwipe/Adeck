@@ -59,11 +59,36 @@ PAD     = 4
 # ===== 共通パーツ =====
 
 def _header(lcd: LCD, title: str, color: int):
-    """カラーヘッダバー（small_text=8px で描画）"""
+    """カラーヘッダバー（small_text=8px で描画）。
+    右上は現在プロファイル（プリセット）バッジ用に空けておく。"""
     lcd.rect(0, 0, W, HDR_H, color, fill=True)
-    lcd.small_text(title[:38], PAD, 5, BLACK)
-    hint = "< swipe >"
-    lcd.small_text(hint, W - len(hint) * 8 - PAD, 5, 0x3186)
+    lcd.small_text(title[:22], PAD, 5, BLACK)
+
+
+def _profile_ascii(name, idx: int) -> str:
+    """プロファイル名をASCIIバッジ文字列に。日本語等は8x8フォントで描けないため
+    ASCII名はそのまま、非ASCIIは 'P{n}' へフォールバック。"""
+    if name:
+        try:
+            if all(ord(c) < 128 for c in name):
+                return name[:8]
+        except Exception:
+            pass
+    return "P{}".format(idx + 1)
+
+
+def _profile_badge(lcd: LCD, state) -> None:
+    """全ページ共通：右上に現在プロファイルをバッジ表示（プロファイル色）。
+    画面タップで次プロファイルへ切替わる（タップ処理は main.py 側）。"""
+    from config import PROFILES
+    pi    = state.profile
+    col   = PROFILE_COLORS[pi % len(PROFILE_COLORS)]
+    name  = PROFILES[pi] if pi < len(PROFILES) else ""
+    label = _profile_ascii(name, pi)
+    bw    = len(label) * 8 + 8
+    x0    = W - bw
+    lcd.rect(x0, 0, bw, HDR_H, col, fill=True)
+    lcd.small_text(label, x0 + 4, 5, BLACK)
 
 def _vline(lcd: LCD):
     """垂直区切り線"""
@@ -301,3 +326,4 @@ _DRAW_FUNCS = [
 
 def draw_page(lcd: LCD, page: int, state) -> None:
     _DRAW_FUNCS[page % PAGE_COUNT](lcd, page, state)
+    _profile_badge(lcd, state)   # 全ページ共通：現在プロファイルのバッジ

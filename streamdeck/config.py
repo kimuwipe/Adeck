@@ -7,10 +7,11 @@ PROFILES = ["汎用", "SolidWorks", "音声", "開発"]
 
 # ===== キー定義凡例 =====
 # "ACTION_NAME"          → hid.py で定義されたアクション（PC側でキー送信）
-# "APP:C:/path/to/app"   → PC側エージェント経由でアプリ起動
+# "APP:C:/path/to/app"   → PC側でアプリ/ショートカット(.lnk/.url)起動
 # "URL:https://..."      → PC側で既定ブラウザでURLを開く
 # "CMD:command args"     → PC側でシェルコマンド実行
 # "TEXT:入力文字列"       → PC側でテキスト入力（\n=改行、日本語対応）
+# "KEY:ctrl c"           → PC側でキーコンビ送信（空白区切り・記録ボタンで設定）
 # "PROFILE_NEXT"         → プロファイル順繰り切替（SW1固定推奨）
 # None                   → 無効
 

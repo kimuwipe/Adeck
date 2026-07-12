@@ -53,6 +53,8 @@ KEY_OPTIONS = [
     "APP_LAUNCH",
     # 値入力アクション（右の入力欄に URL / コマンド / テキストを入力）
     "URL_OPEN","CMD_RUN","TEXT_INPUT",
+    # 記録したキーコンビネーション（⌨記録ボタンで設定）
+    "HOTKEY",
     # プロファイル
     "PROFILE_NEXT",
 ]
@@ -62,6 +64,64 @@ ARG_ACTIONS = {"URL_OPEN", "CMD_RUN", "TEXT_INPUT"}
 
 # キー種別 → config.py に書き出すプレフィックス
 _ARG_PREFIX = {"URL_OPEN": "URL", "CMD_RUN": "CMD", "TEXT_INPUT": "TEXT"}
+
+# プリセット最大数
+MAX_PRESETS = 32
+
+# ファイル選択で許可する拡張子（アプリ / ショートカット）
+APP_FILETYPES = [
+    ("プログラム/ショートカット", "*.exe;*.lnk;*.url;*.bat;*.cmd"),
+    ("ショートカット", "*.lnk;*.url"),
+    ("実行ファイル", "*.exe"),
+    ("全ファイル", "*.*"),
+]
+
+# ===== キー記録（tkinter keysym → pyautogui キー名）=====
+_KEYSYM_MAP = {
+    "Return": "enter", "Escape": "esc", "Tab": "tab", "BackSpace": "backspace",
+    "Delete": "delete", "space": "space", "Up": "up", "Down": "down",
+    "Left": "left", "Right": "right", "Home": "home", "End": "end",
+    "Prior": "pageup", "Next": "pagedown", "Insert": "insert",
+    "comma": ",", "period": ".", "slash": "/", "backslash": "\\",
+    "minus": "-", "plus": "+", "equal": "=", "semicolon": ";", "colon": ":",
+    "apostrophe": "'", "quotedbl": '"', "bracketleft": "[", "bracketright": "]",
+    "grave": "`", "asterisk": "*", "numbersign": "#", "exclam": "!", "at": "@",
+    "dollar": "$", "percent": "%", "ampersand": "&", "parenleft": "(",
+    "parenright": ")", "underscore": "_", "question": "?",
+}
+_MODIFIER_KEYSYMS = {
+    "Control_L", "Control_R", "Shift_L", "Shift_R", "Alt_L", "Alt_R",
+    "Meta_L", "Meta_R", "Super_L", "Super_R", "Win_L", "Win_R",
+}
+
+
+def _keysym_to_key(ks: str):
+    """tkinter の keysym を pyautogui のキー名に変換（不明なら None）。"""
+    if ks in _KEYSYM_MAP:
+        return _KEYSYM_MAP[ks]
+    if len(ks) == 1:
+        return ks.lower()
+    if len(ks) >= 2 and ks[0] == "F" and ks[1:].isdigit():
+        return ks.lower()            # F1〜F24
+    if ks.startswith("KP_") and ks[3:].isdigit():
+        return ks[3:]                # テンキー数字
+    return None
+
+
+def combo_from_event(ev):
+    """キーイベントから "ctrl shift c" 形式（空白区切り）のコンビネーションを返す。
+    修飾キー単体や不明キーは None。"""
+    if ev.keysym in _MODIFIER_KEYSYMS:
+        return None
+    key = _keysym_to_key(ev.keysym)
+    if not key:
+        return None
+    mods = []
+    st = ev.state
+    if st & 0x0004:   mods.append("ctrl")
+    if st & 0x20000:  mods.append("alt")     # Windows: Alt = Mod1(0x20000)
+    if st & 0x0001:   mods.append("shift")
+    return " ".join(mods + [key])
 
 # プロファイル別アクセント色（Pico の PROFILE_COLORS と対応）
 PROFILE_ACCENTS = ["#22d3ee", "#22c55e", "#eab308", "#f97316"]
@@ -94,6 +154,8 @@ def action_value(key, app: str = "", arg: str = ""):
     （またはNone）を返す。ライブ反映（シリアル送信）でも使う。"""
     if key == "APP_LAUNCH" and app:
         return f"APP:{app}"
+    if key == "HOTKEY" and arg:
+        return f"KEY:{arg}"
     if key in _ARG_PREFIX and arg:
         return f"{_ARG_PREFIX[key]}:{arg}"
     if key in ("（なし）", None, ""):
@@ -108,6 +170,8 @@ def short_label(key, app: str = "", arg: str = "") -> str:
         return "—"
     if v.startswith("APP:"):
         return "APP:" + Path(v[4:]).name[:12]
+    if v.startswith("KEY:"):
+        return "⌨ " + v[4:].replace(" ", "+")[:14]
     if v.startswith("URL:"):
         return "URL:" + v[4:][:12]
     if v.startswith("CMD:"):
@@ -210,6 +274,7 @@ def default_config() -> dict:
         ],
         "display": {"brightness": 80},
         "auto_profile": {"enabled": False, "rules": dict(DEFAULT_AUTO_RULES)},
+        "presets": [],
     }
 
 
@@ -225,6 +290,7 @@ def config_to_py(cfg: dict) -> str:
         "#   \"URL:...\"    → 既定ブラウザでURLを開く",
         "#   \"CMD:...\"    → シェルコマンド実行",
         "#   \"TEXT:...\"   → テキスト入力（\\n=改行）",
+        "#   \"KEY:...\"    → キーコンビ送信（例 KEY:ctrl c）",
         "",
         f'PROFILES = {json.dumps(cfg["profiles"], ensure_ascii=False)}',
         "",
@@ -337,6 +403,7 @@ class App(ctk.CTk):
         self.cfg.setdefault("display", {"brightness": 80})
         self.cfg.setdefault("auto_profile",
                             {"enabled": False, "rules": dict(DEFAULT_AUTO_RULES)})
+        self.cfg.setdefault("presets", [])
         n = len(self.cfg["profiles"])
         for p in range(n):
             for sw in self.cfg["switches"][p]:
@@ -468,6 +535,12 @@ class App(ctk.CTk):
                      ).pack(anchor="w", padx=12, pady=(0, 4))
         sf = ctk.CTkScrollableFrame(parent, fg_color="transparent")
         sf.pack(fill="both", expand=True, padx=4, pady=4)
+
+        # プリセット（動的・上部）
+        self._preset_frame = ctk.CTkFrame(sf, fg_color="transparent")
+        self._preset_frame.pack(fill="x")
+        self._refresh_presets()
+
         for cat, keys in KEY_CATEGORIES:
             ctk.CTkLabel(sf, text=cat, font=ctk.CTkFont(size=11, weight="bold"),
                          text_color="#8ab4d8").pack(anchor="w", padx=6, pady=(8, 2))
@@ -493,18 +566,33 @@ class App(ctk.CTk):
             w.destroy()
 
         accent = PROFILE_ACCENTS[self._pi % len(PROFILE_ACCENTS)]
+        header = ctk.CTkFrame(self._detail, fg_color="transparent")
+        header.pack(fill="x", padx=14, pady=(12, 4))
         if self._sel[0] == "sw":
             si = self._sel[1]
-            ctk.CTkLabel(self._detail, text=f"SW{si+1} の設定",
+            ctk.CTkLabel(header, text=f"SW{si+1} の設定",
                          font=ctk.CTkFont(size=15, weight="bold"),
-                         text_color=accent).pack(anchor="w", padx=14, pady=(12, 6))
-            self._make_action_editor(self._detail, ("sw", self._pi, si), "アクション")
+                         text_color=accent).pack(side="left")
         else:
             ei = self._sel[1]
             note = "（ENC1〜3は全プロファイル共通）" if ei < 3 else ""
-            ctk.CTkLabel(self._detail, text=f"ENC{ei+1} の設定 {note}",
+            ctk.CTkLabel(header, text=f"ENC{ei+1} の設定 {note}",
                          font=ctk.CTkFont(size=15, weight="bold"),
-                         text_color=accent).pack(anchor="w", padx=14, pady=(12, 6))
+                         text_color=accent).pack(side="left")
+
+        # プリセット保存/管理（選択中アクティブスロットの内容を保存）
+        ctk.CTkButton(header, text="プリセット管理", width=100, fg_color="#555",
+                      hover_color="#666",
+                      command=self._manage_presets).pack(side="right", padx=2)
+        ctk.CTkButton(header, text="＋ プリセット保存", width=120,
+                      fg_color="#7c3aed", hover_color="#6d28d9",
+                      command=self._save_preset).pack(side="right", padx=2)
+
+        if self._sel[0] == "sw":
+            self._make_action_editor(self._detail, ("sw", self._pi, self._sel[1]),
+                                     "アクション")
+        else:
+            ei = self._sel[1]
             for dk, dlabel in [("cw", "CW 右回し"),
                                ("ccw", "CCW 左回し"),
                                ("push", "Push 押込み")]:
@@ -526,10 +614,13 @@ class App(ctk.CTk):
 
         ctk.CTkButton(row, text="📁", width=38,
                       command=lambda s=slot: self._browse(s)).pack(side="left", padx=4)
+        ctk.CTkButton(row, text="⌨ 記録", width=64, fg_color="#4a3a5a",
+                      hover_color="#5a4a6a",
+                      command=lambda s=slot: self._record(s)).pack(side="left", padx=2)
 
         arg_var = tk.StringVar(value=d.get(argf, ""))
         ent = ctk.CTkEntry(row, textvariable=arg_var,
-                           placeholder_text="URL / コマンド / テキスト")
+                           placeholder_text="URL / コマンド / テキスト / キー(ctrl c)")
         ent.pack(side="left", padx=6, fill="x", expand=True)
         ent.bind("<KeyRelease>",
                  lambda e, s=slot, v=arg_var: self._on_arg_change(s, v.get()))
@@ -556,8 +647,8 @@ class App(ctk.CTk):
 
     def _browse(self, slot):
         path = filedialog.askopenfilename(
-            title="アプリを選択",
-            filetypes=[("実行ファイル", "*.exe"), ("全ファイル", "*.*")])
+            title="アプリ / ショートカットを選択",
+            filetypes=APP_FILETYPES)
         if not path:
             return
         d, kf, af, argf = self._slot_fields(slot)
@@ -577,6 +668,160 @@ class App(ctk.CTk):
         self._mirror_enc_common(self._active_slot, kf, key)
         self._build_detail()
         self._refresh_grid()
+
+    # ---------- キー記録（ホットキー） ----------
+    def _record(self, slot):
+        self._active_slot = slot
+        self._open_recorder(lambda combo: self._apply_hotkey(slot, combo))
+
+    def _apply_hotkey(self, slot, combo):
+        if not combo:
+            return
+        d, kf, af, argf = self._slot_fields(slot)
+        d[kf] = "HOTKEY"
+        d[argf] = combo
+        self._mirror_enc_common(slot, kf, "HOTKEY")
+        self._mirror_enc_common(slot, argf, combo)
+        self._active_slot = slot
+        self._build_detail()
+        self._refresh_grid()
+
+    def _open_recorder(self, callback):
+        """小窓を開き、押されたキーコンビネーションを記録して callback へ渡す。"""
+        win = ctk.CTkToplevel(self)
+        win.title("キー記録")
+        win.geometry("360x160")
+        win.transient(self)
+        ctk.CTkLabel(win, text="登録したいキーを押してください",
+                     font=ctk.CTkFont(size=14, weight="bold")).pack(pady=(22, 4))
+        ctk.CTkLabel(win, text="修飾キー＋キー（例: Ctrl+C）／ Esc で中止",
+                     font=ctk.CTkFont(size=11), text_color="#888").pack()
+        preview = ctk.CTkLabel(win, text="―", font=ctk.CTkFont(size=18, weight="bold"),
+                               text_color="#22c55e")
+        preview.pack(pady=12)
+
+        def _done(combo):
+            try:
+                win.grab_release()
+            except Exception:
+                pass
+            win.destroy()
+            callback(combo)
+
+        def on_key(ev):
+            if ev.keysym == "Escape":
+                _done(None)
+                return
+            combo = combo_from_event(ev)
+            if combo:
+                preview.configure(text=combo.replace(" ", "+"))
+                win.after(220, lambda: _done(combo))
+
+        win.bind("<KeyPress>", on_key)
+        win.after(60, lambda: (win.grab_set(), win.focus_force()))
+
+    # ---------- プリセット ----------
+    def _save_preset(self):
+        if not self._active_slot:
+            return
+        d, kf, af, argf = self._slot_fields(self._active_slot)
+        key = d.get(kf)
+        app = d.get(af, "")
+        arg = d.get(argf, "")
+        if action_value(key, app, arg) is None:
+            messagebox.showwarning(
+                "プリセット", "先に有効なアクションを設定してください。")
+            return
+        presets = self.cfg.setdefault("presets", [])
+        if len(presets) >= MAX_PRESETS:
+            messagebox.showwarning(
+                "プリセット", f"プリセットは最大 {MAX_PRESETS} 個までです。")
+            return
+        from tkinter import simpledialog
+        name = simpledialog.askstring(
+            "プリセット保存", "プリセット名を入力してください:",
+            initialvalue=short_label(key, app, arg), parent=self)
+        if not name:
+            return
+        presets.append({"name": name, "key": key, "app": app, "arg": arg})
+        self._refresh_presets()
+        messagebox.showinfo("プリセット", f"「{name}」を保存しました。")
+
+    def _assign_preset(self, preset):
+        if not self._active_slot:
+            messagebox.showinfo("プリセット",
+                                "先にスイッチ/エンコーダを選択してください。")
+            return
+        d, kf, af, argf = self._slot_fields(self._active_slot)
+        d[kf]   = preset.get("key", "（なし）")
+        d[af]   = preset.get("app", "")
+        d[argf] = preset.get("arg", "")
+        self._mirror_enc_common(self._active_slot, kf, d[kf])
+        self._mirror_enc_common(self._active_slot, af, d[af])
+        self._mirror_enc_common(self._active_slot, argf, d[argf])
+        self._build_detail()
+        self._refresh_grid()
+
+    def _refresh_presets(self):
+        if not hasattr(self, "_preset_frame"):
+            return
+        for w in self._preset_frame.winfo_children():
+            w.destroy()
+        presets = self.cfg.get("presets", [])
+        ctk.CTkLabel(self._preset_frame, text=f"プリセット ({len(presets)})",
+                     font=ctk.CTkFont(size=11, weight="bold"),
+                     text_color="#c084fc").pack(anchor="w", padx=6, pady=(4, 2))
+        if not presets:
+            ctk.CTkLabel(self._preset_frame, text="「＋プリセット保存」で追加",
+                         font=ctk.CTkFont(size=10), text_color="#777"
+                         ).pack(anchor="w", padx=8)
+        for p in presets:
+            ctk.CTkButton(self._preset_frame, text="★ " + p.get("name", "?"),
+                          height=26, anchor="w", fg_color="#3a2f4a",
+                          hover_color="#4a3a5a", font=ctk.CTkFont(size=11),
+                          command=lambda pp=p: self._assign_preset(pp)
+                          ).pack(fill="x", padx=6, pady=1)
+
+    def _manage_presets(self):
+        win = ctk.CTkToplevel(self)
+        win.title("プリセット管理")
+        win.geometry("380x440")
+        win.transient(self)
+        ctk.CTkLabel(win, text="プリセット一覧",
+                     font=ctk.CTkFont(size=14, weight="bold")).pack(pady=(12, 6))
+        sf = ctk.CTkScrollableFrame(win)
+        sf.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+        def render():
+            for w in sf.winfo_children():
+                w.destroy()
+            presets = self.cfg.get("presets", [])
+            if not presets:
+                ctk.CTkLabel(sf, text="プリセットはありません",
+                             text_color="#888").pack(pady=12)
+            for i, p in enumerate(presets):
+                rowf = ctk.CTkFrame(sf)
+                rowf.pack(fill="x", pady=2)
+                ctk.CTkLabel(rowf, text=p.get("name", "?"), anchor="w"
+                             ).pack(side="left", padx=8, fill="x", expand=True)
+                ctk.CTkLabel(rowf, text=short_label(p.get("key"), p.get("app", ""),
+                                                    p.get("arg", "")),
+                             text_color="#888", anchor="e"
+                             ).pack(side="left", padx=6)
+                ctk.CTkButton(rowf, text="削除", width=50, fg_color="#b91c1c",
+                              hover_color="#991b1b",
+                              command=lambda idx=i: _delete(idx)).pack(side="right", padx=6)
+
+        def _delete(idx):
+            try:
+                self.cfg["presets"].pop(idx)
+            except (IndexError, KeyError):
+                pass
+            render()
+            self._refresh_presets()
+
+        render()
+        win.after(60, lambda: (win.grab_set(), win.focus_force()))
 
     def _on_bright(self, v):
         b = int(float(v))
