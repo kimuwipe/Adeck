@@ -76,7 +76,21 @@ class AgentThread:
         self._weather = {}
         self._weather_at = 0
         self._threads = []
+        self._send_lock = threading.Lock()   # info/auto/live の書き込み競合を防ぐ
+        self._current_profile = None      # 現在のプロファイル名（自動切替の重複送信防止）
+        self._auto_enabled = False        # 前面アプリ連動 自動切替の有効/無効
+        self._auto_rules = {}             # {exe名(小文字): プロファイル名}
         self._load_config()
+        self._load_auto_profile()
+
+    # ---- 自動切替ルールの読み込み ----
+    def _load_auto_profile(self):
+        ap = self._config.get("auto_profile") or {}
+        self._auto_enabled = bool(ap.get("enabled", False))
+        rules = ap.get("rules")
+        if not rules and CFG_OK:
+            rules = cfgmod.DEFAULT_AUTO_RULES
+        self._auto_rules = {str(k).lower(): v for k, v in (rules or {}).items()}
 
     # ---- ログ/ステータス送信 ----
     def _log(self, msg: str):
@@ -118,9 +132,10 @@ class AgentThread:
 
     def _send(self, data: dict):
         if self._ser and self._ser.is_open:
+            payload = (json.dumps(data, ensure_ascii=False) + "\n").encode("utf-8")
             try:
-                self._ser.write(
-                    (json.dumps(data, ensure_ascii=False) + "\n").encode("utf-8"))
+                with self._send_lock:
+                    self._ser.write(payload)
             except Exception as e:
                 self._log(f"送信エラー: {e}")
                 self._ser = None
@@ -161,8 +176,11 @@ class AgentThread:
                 elif a == "APP_CALC":
                     ag.launch_app("calc.exe")
             self._log(f"アクション: {a}")
+        elif t == "config_ack":
+            self._log("Pico: ライブ設定を反映しました")
         elif t == "profile_change":
             pf = msg.get("profile", "?")
+            self._current_profile = pf     # 手動(SW1)切替に追従
             self._log(f"プロファイル → {pf}")
             self._status(profile=pf)
         elif t == "button":
@@ -228,9 +246,11 @@ class AgentThread:
         self._connect()
         rx = threading.Thread(target=self._receive_loop, daemon=True)
         info = threading.Thread(target=self._info_loop, daemon=True)
+        auto = threading.Thread(target=self._auto_profile_loop, daemon=True)
         rx.start()
         info.start()
-        self._threads = [rx, info]
+        auto.start()
+        self._threads = [rx, info, auto]
         self._log("エージェント開始")
 
     def stop(self):
@@ -242,6 +262,75 @@ class AgentThread:
 
     def reload_config(self):
         self._load_config()
+        self._load_auto_profile()
+
+    # ---- ライブ設定反映（config.py書き込みなしで即反映） ----
+    def send_live_config(self, cfg: dict) -> bool:
+        if not (self._ser and self._ser.is_open):
+            self._log("Pico未接続のためライブ反映できません")
+            return False
+        if not CFG_OK:
+            self._log("configurator.py が無いためライブ反映できません")
+            return False
+        try:
+            profiles, sm, em = cfgmod.expand_maps(cfg)
+        except Exception as e:
+            self._log(f"設定展開エラー: {e}")
+            return False
+        self._send({"type": "config", "profiles": profiles,
+                    "switches": sm, "encoders": em})
+        self._log("ライブ設定を送信しました（書込なし即反映）")
+        # 自動切替ルールも最新化
+        ap = cfg.get("auto_profile") or {}
+        rules = ap.get("rules") or {}
+        if rules:
+            self._auto_rules = {str(k).lower(): v for k, v in rules.items()}
+        return True
+
+    # ---- 前面アプリ連動 自動プロファイル切替 ----
+    def set_auto_enabled(self, enabled: bool):
+        self._auto_enabled = bool(enabled)
+        self._log(f"自動プロファイル切替: {'ON' if enabled else 'OFF'}")
+
+    def set_profile_remote(self, name: str):
+        if self._ser and self._ser.is_open:
+            self._send({"type": "set_profile", "profile": name})
+
+    def _foreground_proc_name(self):
+        """最前面ウィンドウのプロセス実行ファイル名を返す（Windows専用）"""
+        try:
+            import ctypes
+            import psutil
+            user32 = ctypes.windll.user32
+            hwnd = user32.GetForegroundWindow()
+            if not hwnd:
+                return None
+            pid = ctypes.c_ulong()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if not pid.value:
+                return None
+            return psutil.Process(pid.value).name()
+        except Exception:
+            return None
+
+    def _auto_profile_loop(self):
+        """1秒ごとに前面アプリを監視し、ルールに一致したらプロファイルを切替える。
+        前面アプリが変わった時だけ判定するので手動切替と競合しにくい。"""
+        last_proc = None
+        while self._running:
+            if not self._auto_enabled:
+                time.sleep(1.0)
+                continue
+            name = self._foreground_proc_name()
+            if name and name != last_proc:
+                last_proc = name
+                target = self._auto_rules.get(name.lower())
+                if target and target != self._current_profile:
+                    self.set_profile_remote(target)
+                    self._current_profile = target
+                    self._status(profile=target)
+                    self._log(f"自動切替: {name} → {target}")
+            time.sleep(1.0)
 
 
 # ============================================================
@@ -284,11 +373,21 @@ class StreamDeckApp(tk.Tk):
     def _load_config(self) -> dict:
         try:
             with open(CONFIG_PATH, encoding="utf-8") as f:
-                return json.load(f)
+                cfg = json.load(f)
         except FileNotFoundError:
-            if CFG_OK:
-                return cfgmod.default_config()
-            return {}
+            cfg = cfgmod.default_config() if CFG_OK else {}
+        # auto_profile が無い古い設定にデフォルトを補完
+        if "auto_profile" not in cfg:
+            default_rules = dict(cfgmod.DEFAULT_AUTO_RULES) if CFG_OK else {}
+            cfg["auto_profile"] = {"enabled": False, "rules": default_rules}
+        return cfg
+
+    def _save_config(self):
+        try:
+            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+                json.dump(self._cfg, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            messagebox.showerror("保存エラー", str(e))
 
     # ---- UI構築 ----
     def _build_ui(self):
@@ -362,11 +461,44 @@ class StreamDeckApp(tk.Tk):
         if not AUTOSTART_OK:
             chk.config(state="disabled")
 
+        # 前面アプリ連動 自動プロファイル切替
+        init_auto = bool(self._cfg.get("auto_profile", {}).get("enabled", False))
+        self.var_autoprofile = tk.BooleanVar(value=init_auto)
+        self._agent.set_auto_enabled(init_auto)
+        autof = tk.Frame(f)
+        autof.grid(row=11, column=0, columnspan=2, sticky="w", **pad)
+        ttk.Checkbutton(
+            autof, text="前面アプリで自動プロファイル切替",
+            variable=self.var_autoprofile,
+            command=self._toggle_autoprofile).pack(side="left")
+        ttk.Button(autof, text="ルール編集",
+                   command=self._edit_auto_rules).pack(side="left", padx=8)
+
         # トレイ常駐の説明
         note = "※ ×ボタンでタスクトレイに最小化します（常駐継続）" \
             if TRAY_OK else "※ pystray未導入のためトレイ常駐は無効です"
         tk.Label(f, text=note, fg="gray").grid(
-            row=11, column=0, columnspan=2, sticky="w", **pad)
+            row=12, column=0, columnspan=2, sticky="w", **pad)
+
+    def _toggle_autoprofile(self):
+        en = self.var_autoprofile.get()
+        self._agent.set_auto_enabled(en)
+        self._cfg.setdefault("auto_profile", {})["enabled"] = en
+        self._save_config()
+
+    def _edit_auto_rules(self):
+        """自動切替ルール（JSON）を既定のエディタで開く。編集後は再読込で反映。"""
+        import os
+        self._save_config()   # 最新状態をファイルに落としてから開く
+        try:
+            os.startfile(CONFIG_PATH)   # type: ignore[attr-defined]
+            messagebox.showinfo(
+                "ルール編集",
+                "streamdeck_config.json の \"auto_profile\" → \"rules\" を編集してください。\n"
+                "（\"プロセス名.exe\": \"プロファイル名\" の形式）\n\n"
+                "編集・保存したら「プロファイル設定」タブの「設定を再読込」を押すと反映されます。")
+        except Exception as e:
+            messagebox.showerror("ルール編集", str(e))
 
     def _toggle_autostart(self):
         if not AUTOSTART_OK:
@@ -413,16 +545,41 @@ class StreamDeckApp(tk.Tk):
                    command=self._open_configurator).pack(side="left", padx=4)
         ttk.Button(btnf, text="設定を再読込",
                    command=self._reload_config).pack(side="left", padx=4)
+        ttk.Button(btnf, text="ライブ反映（書込なし）",
+                   command=self._live_reflect).pack(side="left", padx=4)
+
+        tk.Label(f, text="※「ライブ反映」は保存済み設定をPicoへ即送信します"
+                        "（config.py書き込み・再起動は不要）",
+                 fg="gray", justify="left").pack(anchor="w", padx=12)
 
     def _open_configurator(self):
-        """別ウィンドウでconfiguratorのフルGUIを開く"""
+        """別ウィンドウでconfiguratorのフルGUIを開く。
+        ライブ反映コールバックを渡し、エディタ内から即反映できるようにする。"""
         if not CFG_OK:
             return
         try:
-            win = cfgmod.App()
+            win = cfgmod.App(on_live_apply=self._live_apply_from_editor)
             win.mainloop()
         except Exception as e:
             messagebox.showerror("エラー", f"設定エディタを開けません:\n{e}")
+
+    def _live_apply_from_editor(self, cfg: dict) -> bool:
+        """configurator の「ライブ反映」ボタンから呼ばれる。
+        （configurator 側で既に JSON 保存済み）"""
+        self._cfg = cfg
+        self._agent.reload_config()
+        return self._agent.send_live_config(cfg)
+
+    def _live_reflect(self):
+        """保存済み設定を読み直してPicoへライブ送信する"""
+        self._cfg = self._load_config()
+        self._agent.reload_config()
+        if self._agent.send_live_config(self._cfg):
+            messagebox.showinfo("ライブ反映",
+                "Picoへ即時反映しました（config.py書き込み・再起動は不要）。")
+        else:
+            messagebox.showwarning("ライブ反映",
+                "Picoへ反映できませんでした。接続状態を確認してください。")
 
     def _reload_config(self):
         self._cfg = self._load_config()

@@ -6,6 +6,7 @@ import sys, time, json, gc
 
 gc.collect()   # 起動時にメモリを整理してフレームバッファ確保を確実に
 
+import config as _config   # ライブ設定反映で display_pages 側の参照も更新するため
 from config import (
     PROFILES, SWITCH_MAP, ENCODER_MAP,
     DISPLAY_BRIGHTNESS, SWITCH_DEBOUNCE_MS, ENCODER_DEBOUNCE_MS
@@ -115,6 +116,43 @@ def handle_action(action):
         kbd.send("SW_ZOOM_FIT"); return
     kbd.send(action)
 
+# ===== PC発のプロファイル遠隔切替（前面アプリ連動） =====
+def set_profile_by(name=None, index=None):
+    """PC側から指定されたプロファイルへ切り替える。
+    エコー（profile_change送信）はしない（PC発なのでループ防止）。"""
+    new = None
+    if name in PROFILES:
+        new = PROFILES.index(name)
+    elif isinstance(index, int) and 0 <= index < len(PROFILES):
+        new = index
+    if new is not None and new != state.profile:
+        state.profile = new
+        state.dirty0  = True
+        state.dirty1  = True
+        print("[PROFILE] PC切替 →", profile_name())
+
+# ===== ライブ設定反映（再起動なしでキー割り当てを更新） =====
+def apply_live_config(msg):
+    """PCから受け取ったマップで SWITCH_MAP/ENCODER_MAP/PROFILES を差し替える。
+    main.py のグローバルと config モジュール属性（display_pagesが参照）の両方を更新。"""
+    global PROFILES, SWITCH_MAP, ENCODER_MAP
+    pf = msg.get("profiles")
+    sm = msg.get("switches")
+    em = msg.get("encoders")
+    if isinstance(pf, list) and pf:
+        PROFILES = pf; _config.PROFILES = pf
+    if isinstance(sm, list) and sm:
+        SWITCH_MAP = sm; _config.SWITCH_MAP = sm
+    if isinstance(em, list) and em:
+        ENCODER_MAP = em; _config.ENCODER_MAP = em
+    if state.profile >= len(PROFILES):
+        state.profile = 0
+    state.dirty0 = True
+    state.dirty1 = True
+    gc.collect()
+    print("[CONFIG] ライブ設定を反映")
+    serial_send({"type": "config_ack"})
+
 # ===== 初期化 =====
 print("[BOOT] 初期化開始")
 kbd       = HIDKeyboard()
@@ -169,6 +207,10 @@ while True:
             state.weather    = msg.get("weather",    {})
             state.dirty0     = True
             state.dirty1     = True
+        elif t == "set_profile":
+            set_profile_by(msg.get("profile"), msg.get("index"))
+        elif t == "config":
+            apply_live_config(msg)
 
     # ── タッチ（スワイプ・タップでページ切り替え）
     g0, g1 = touch_mgr.update_all()

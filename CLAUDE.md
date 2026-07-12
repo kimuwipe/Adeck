@@ -128,8 +128,14 @@ ST7789V2の制御は情報が少なく、長時間デバッグして確定した
 - [x] PC側: ボタンにアクション追加（URL開く/コマンド実行/テキスト入力）
       → プレフィックス方式 URL:/CMD:/TEXT: で実装。agent.send_key が分岐処理、
         configurator で入力欄から設定（Pico側は無改造で action 文字列を透過転送）
-- [ ] PC側: アプリ連動の自動プロファイル切替（前面アプリで自動切替）
-- [ ] PC側: 設定のライブ反映（書き込みなしで即反映）
+- [x] PC側: アプリ連動の自動プロファイル切替（前面アプリで自動切替）
+      → streamdeck_app の AgentThread が前面アプリを1秒毎に監視(ctypes+psutil)、
+        auto_profile.rules で一致したら set_profile メッセージをPicoへ送信。
+        状態タブのチェックボックスでON/OFF、ルールはJSON編集。
+- [x] PC側: 設定のライブ反映（書き込みなしで即反映）
+      → configurator.expand_maps でランタイム形式に展開し {type:config} を送信。
+        Pico は apply_live_config で main globals と config モジュール属性の両方を
+        差し替え（display_pagesがconfig直参照のため）。config_ack を返す。
 - [ ] +3.3VA/+3.3Vのメイン基板との合流確認
 
 ## 開発環境メモ

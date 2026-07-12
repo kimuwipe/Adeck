@@ -60,18 +60,64 @@ ARG_ACTIONS = {"URL_OPEN", "CMD_RUN", "TEXT_INPUT"}
 _ARG_PREFIX = {"URL_OPEN": "URL", "CMD_RUN": "CMD", "TEXT_INPUT": "TEXT"}
 
 
-def action_literal(key: str, app: str, arg: str) -> str:
-    """キー種別・アプリパス・入力値から config.py に埋め込む
-    Python文字列リテラル（またはNone）を生成する。
-    json.dumps で安全にエスケープするため、テキストに引用符・改行が
-    含まれていても壊れない。"""
+def action_value(key, app: str = "", arg: str = ""):
+    """キー種別・アプリパス・入力値から、Picoに渡す実際のアクション文字列
+    （またはNone）を返す。ライブ反映（シリアル送信）でも使う。"""
     if key == "APP_LAUNCH" and app:
-        return json.dumps(f"APP:{app}", ensure_ascii=False)
+        return f"APP:{app}"
     if key in _ARG_PREFIX and arg:
-        return json.dumps(f"{_ARG_PREFIX[key]}:{arg}", ensure_ascii=False)
+        return f"{_ARG_PREFIX[key]}:{arg}"
     if key in ("（なし）", None, ""):
-        return "None"
-    return json.dumps(key, ensure_ascii=False)
+        return None
+    return key
+
+
+def action_literal(key: str, app: str, arg: str) -> str:
+    """action_value を config.py に埋め込む Python 文字列リテラル
+    （またはNone）へ変換する。json.dumps で安全にエスケープするため、
+    テキストに引用符・改行が含まれていても壊れない。"""
+    v = action_value(key, app, arg)
+    return "None" if v is None else json.dumps(v, ensure_ascii=False)
+
+
+def expand_maps(cfg: dict):
+    """cfg から Pico ランタイム形式の (profiles, switch_map, encoder_map) を
+    生成する。config_to_py と同じ展開ロジック（ENC1〜3共通・ENC4別）。
+    ライブ反映のシリアル送信用に JSON 可能な素のリストを返す。"""
+    profiles = cfg.get("profiles", PROFILES)
+    n = len(profiles)
+    switch_map = [
+        [action_value(sw.get("key", "（なし）"), sw.get("app", ""), sw.get("arg", ""))
+         for sw in cfg["switches"][p]]
+        for p in range(n)
+    ]
+
+    def _triple(enc: dict):
+        return [
+            action_value(enc.get("cw"),   enc.get("app_cw", ""),   enc.get("arg_cw", "")),
+            action_value(enc.get("ccw"),  enc.get("app_ccw", ""),  enc.get("arg_ccw", "")),
+            action_value(enc.get("push"), enc.get("app_push", ""), enc.get("arg_push", "")),
+        ]
+
+    common = [_triple(cfg["encoders"][0][i]) for i in range(3)]
+    encoder_map = [common + [_triple(cfg["encoders"][p][3])] for p in range(n)]
+    return profiles, switch_map, encoder_map
+
+
+# ===== 前面アプリ → プロファイル 自動切替 デフォルトルール =====
+# キー: プロセス実行ファイル名（小文字）  値: プロファイル名（PROFILESと一致）
+DEFAULT_AUTO_RULES = {
+    "sldworks.exe":        "SolidWorks",
+    "code.exe":            "開発",
+    "devenv.exe":          "開発",
+    "pycharm64.exe":       "開発",
+    "idea64.exe":          "開発",
+    "windowsterminal.exe": "開発",
+    "obs64.exe":           "音声",
+    "discord.exe":         "音声",
+    "zoom.exe":            "音声",
+    "ms-teams.exe":        "音声",
+}
 
 
 # ===== デフォルト設定 =====
@@ -118,6 +164,7 @@ def default_config() -> dict:
             for p in range(len(PROFILES))
         ],
         "display": {"brightness": 80},
+        "auto_profile": {"enabled": False, "rules": dict(DEFAULT_AUTO_RULES)},
     }
 
 
@@ -193,12 +240,14 @@ def find_pico_drive() -> Path | None:
 
 # ===== GUI アプリ =====
 class App(tk.Tk):
-    def __init__(self):
+    def __init__(self, on_live_apply=None):
         super().__init__()
         self.title(APP_TITLE)
         self.resizable(False, False)
         self.configure(bg="#F4F4F0")
 
+        # 常駐エージェント経由でPicoへ即時反映するコールバック（統合UIから渡される）
+        self._on_live_apply = on_live_apply
         self.cfg            = default_config()
         self._current_prof  = 0   # 表示中のプロファイル index
         self._sw_vars       = []  # [profile][sw] = {key, app}
@@ -273,6 +322,13 @@ class App(tk.Tk):
                   relief="flat", bg="#2563EB", fg="white",
                   activebackground="#1D4ED8",
                   command=self._write_to_pico, padx=14).pack(side="right", padx=12)
+        # 統合UIから起動された場合のみ「ライブ反映」ボタンを出す
+        if self._on_live_apply:
+            tk.Button(footer, text="ライブ反映（書込なし）",
+                      font=("Yu Gothic UI",10,"bold"),
+                      relief="flat", bg="#16A34A", fg="white",
+                      activebackground="#15803D",
+                      command=self._live_apply, padx=12).pack(side="right", padx=4)
         tk.Button(footer, text="設定を保存", font=("Yu Gothic UI",10),
                   relief="flat", bg="#D8D8D4",
                   command=self._save, padx=10).pack(side="right", padx=4)
@@ -507,6 +563,25 @@ class App(tk.Tk):
         if messagebox.askyesno("リセット", "全プロファイルをデフォルトに戻しますか？"):
             self.cfg = default_config()
             self._refresh_ui()
+
+    def _live_apply(self):
+        """常駐エージェント経由でPicoへ即時反映（config.py書き込み・再起動不要）"""
+        if not self._on_live_apply:
+            return
+        self._sync_cfg()
+        self._save_json()
+        try:
+            ok = self._on_live_apply(self.cfg)
+        except Exception as e:
+            messagebox.showerror("ライブ反映", f"反映に失敗しました:\n{e}")
+            return
+        if ok:
+            messagebox.showinfo("ライブ反映",
+                "Picoへ即時反映しました（config.py書き込み・再起動は不要）。")
+        else:
+            messagebox.showwarning("ライブ反映",
+                "Picoへ反映できませんでした。\n"
+                "統合アプリでPicoに接続されているか確認してください。")
 
     def _write_to_pico(self):
         self._sync_cfg()
