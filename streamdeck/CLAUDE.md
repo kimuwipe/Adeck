@@ -95,7 +95,10 @@ ST7789V2の制御は情報が少なく、長時間デバッグして確定した
   スイッチ2×4／エンコーダ4個をボタングリッド表示、クリックで選択→下パネルで設定、
   右パレットからアクション割り当て。統合UIからは別プロセスで起動（CTk/tk root二重化回避）。
   キー記録（⌨ボタンで任意コンビを捕捉→"KEY:ctrl c"）、プリセット保存/管理（最大32・
-  右パレットに表示）、アプリは.lnk/.url ショートカットも登録可（agentはos.startfile起動）
+  右パレットに表示）、アプリは.lnk/.url ショートカットも登録可（agentはos.startfile起動）。
+  プロファイルは可変数（追加/削除/リネーム、最大MAX_PROFILES=8）。profiles/switches/encoders
+  を同時に増減し、config_to_py/expand_maps は len(cfg["profiles"]) で動的生成。
+  display側 PROFILE_COLORS[pi] は % len でmodulo化（4色を循環）
 - `autostart.py` — Windows自動起動の登録/解除
 - `requirements.txt` — 依存: pyserial, pycaw, psutil, comtypes, pyautogui,
   pystray, Pillow, customtkinter（グリッドUI）, pyperclip（任意・日本語TEXT入力）

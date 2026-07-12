@@ -68,6 +68,9 @@ _ARG_PREFIX = {"URL_OPEN": "URL", "CMD_RUN": "CMD", "TEXT_INPUT": "TEXT"}
 # プリセット最大数
 MAX_PRESETS = 32
 
+# プロファイル最大数（タップ/SW1での順送りが実用的な範囲。必要なら増やせる）
+MAX_PROFILES = 8
+
 # ファイル選択で許可する拡張子（アプリ / ショートカット）
 APP_FILETYPES = [
     ("プログラム/ショートカット", "*.exe;*.lnk;*.url;*.bat;*.cmd"),
@@ -319,8 +322,8 @@ def config_to_py(cfg: dict) -> str:
     lines.append("]")
     lines.append("")
     lines.append("_ENC4_BY_PROFILE = [")
-    for p in range(len(PROFILES)):
-        lines.append(f"    {_enc_tuple(cfg['encoders'][p][3])},  # {PROFILES[p]}")
+    for p in range(len(cfg["profiles"])):
+        lines.append(f"    {_enc_tuple(cfg['encoders'][p][3])},  # {cfg['profiles'][p]}")
     lines.append("]")
     lines.append("")
     lines.append("ENCODER_MAP = [")
@@ -441,10 +444,15 @@ class App(ctk.CTk):
         ctk.CTkLabel(top, text="🎛  StreamDeck 設定",
                      font=ctk.CTkFont(size=18, weight="bold")
                      ).pack(side="left", padx=18, pady=12)
-        self._prof_seg = ctk.CTkSegmentedButton(
-            top, values=self.cfg["profiles"], command=self._on_profile_change)
-        self._prof_seg.set(self.cfg["profiles"][self._pi])
-        self._prof_seg.pack(side="left", padx=10)
+        ctk.CTkLabel(top, text="プロファイル:").pack(side="left", padx=(6, 2))
+        self._prof_menu = ctk.CTkOptionMenu(
+            top, values=self.cfg["profiles"], width=150,
+            command=self._on_profile_change)
+        self._prof_menu.set(self.cfg["profiles"][self._pi])
+        self._prof_menu.pack(side="left", padx=2)
+        ctk.CTkButton(top, text="プロファイル管理", width=118, fg_color="#555",
+                      hover_color="#666",
+                      command=self._manage_profiles).pack(side="left", padx=6)
 
         self._conn_lbl = ctk.CTkLabel(top, text="● Pico未接続", text_color="#888")
         self._conn_lbl.pack(side="right", padx=14)
@@ -851,13 +859,110 @@ class App(ctk.CTk):
                            border_width=(2 if selected else 0),
                            border_color=accent)
 
-    # ---------- プロファイル切替 ----------
+    # ---------- プロファイル切替・管理 ----------
     def _on_profile_change(self, name):
         try:
             self._pi = self.cfg["profiles"].index(name)
         except ValueError:
             self._pi = 0
         self._select(("sw", 0))
+
+    def _add_profile(self):
+        import copy
+        profs = self.cfg["profiles"]
+        if len(profs) >= MAX_PROFILES:
+            messagebox.showwarning(
+                "プロファイル", f"プロファイルは最大 {MAX_PROFILES} 個までです。")
+            return False
+        n = len(profs) + 1
+        name = f"プロファイル{n}"
+        while name in profs:
+            n += 1
+            name = f"プロファイル{n}"
+        profs.append(name)
+        # スイッチ：SW1=プロファイル切替、残りは無効
+        self.cfg["switches"].append(
+            [{"key": "PROFILE_NEXT" if i == 0 else "（なし）", "app": "", "arg": ""}
+             for i in range(SW_COUNT)])
+        # エンコーダ：ENC1〜3共通を揃えるためプロファイル0をコピー
+        self.cfg["encoders"].append(copy.deepcopy(self.cfg["encoders"][0]))
+        return True
+
+    def _delete_profile(self, idx):
+        profs = self.cfg["profiles"]
+        if len(profs) <= 1:
+            messagebox.showwarning("プロファイル", "最低1つは必要です。")
+            return False
+        profs.pop(idx)
+        self.cfg["switches"].pop(idx)
+        self.cfg["encoders"].pop(idx)
+        if self._pi >= len(profs):
+            self._pi = len(profs) - 1
+        return True
+
+    def _manage_profiles(self):
+        win = ctk.CTkToplevel(self)
+        win.title("プロファイル管理")
+        win.geometry("440x480")
+        win.transient(self)
+        ctk.CTkLabel(win, text="プロファイル（名前の変更・追加・削除）",
+                     font=ctk.CTkFont(size=14, weight="bold")).pack(pady=(12, 6))
+        sf = ctk.CTkScrollableFrame(win)
+        sf.pack(fill="both", expand=True, padx=10, pady=(0, 8))
+        bottom = ctk.CTkFrame(win, fg_color="transparent")
+        bottom.pack(fill="x", padx=10, pady=(0, 10))
+
+        def commit_rename(idx, var):
+            new = var.get().strip()
+            if not new:
+                var.set(self.cfg["profiles"][idx])
+                return
+            if new in self.cfg["profiles"] and self.cfg["profiles"].index(new) != idx:
+                messagebox.showwarning("プロファイル", "同名のプロファイルがあります。")
+                var.set(self.cfg["profiles"][idx])
+                return
+            self.cfg["profiles"][idx] = new
+            self._refresh_profile_menu()
+            self._refresh_grid()
+
+        def render():
+            for w in sf.winfo_children():
+                w.destroy()
+            profs = self.cfg["profiles"]
+            for i, p in enumerate(profs):
+                rowf = ctk.CTkFrame(sf)
+                rowf.pack(fill="x", pady=3)
+                accent = PROFILE_ACCENTS[i % len(PROFILE_ACCENTS)]
+                ctk.CTkLabel(rowf, text=f"P{i+1}", width=32, text_color=accent,
+                             font=ctk.CTkFont(weight="bold")).pack(side="left", padx=(8, 4))
+                var = tk.StringVar(value=p)
+                ent = ctk.CTkEntry(rowf, textvariable=var)
+                ent.pack(side="left", padx=4, fill="x", expand=True)
+                ent.bind("<Return>", lambda e, idx=i, v=var: commit_rename(idx, v))
+                ent.bind("<FocusOut>", lambda e, idx=i, v=var: commit_rename(idx, v))
+                ctk.CTkButton(rowf, text="削除", width=48, fg_color="#b91c1c",
+                              hover_color="#991b1b",
+                              command=lambda idx=i: _do_delete(idx)).pack(side="right", padx=6)
+            info.configure(text=f"{len(profs)} / {MAX_PROFILES} プロファイル")
+
+        def _do_delete(idx):
+            if self._delete_profile(idx):
+                render()
+                self._refresh_profile_menu()
+                self._select(("sw", 0))
+
+        def _do_add():
+            if self._add_profile():
+                render()
+                self._refresh_profile_menu()
+
+        info = ctk.CTkLabel(bottom, text="", text_color="#888")
+        info.pack(side="left")
+        ctk.CTkButton(bottom, text="＋ プロファイル追加", fg_color="#16a34a",
+                      hover_color="#15803d", command=_do_add).pack(side="right")
+
+        render()
+        win.after(60, lambda: (win.grab_set(), win.focus_force()))
 
     # ---------- Pico 操作 ----------
     def _check_pico(self):
@@ -880,10 +985,14 @@ class App(ctk.CTk):
         if messagebox.askyesno("リセット", "全プロファイルをデフォルトに戻しますか？"):
             self.cfg = default_config()
             self._pi = 0
-            self._prof_seg.set(self.cfg["profiles"][0])
+            self._refresh_profile_menu()
             self._bright.set(self.cfg["display"]["brightness"])
             self._bright_lbl.configure(text=f"{self.cfg['display']['brightness']}%")
             self._select(("sw", 0))
+
+    def _refresh_profile_menu(self):
+        self._prof_menu.configure(values=self.cfg["profiles"])
+        self._prof_menu.set(self.cfg["profiles"][self._pi])
 
     def _live_apply(self):
         """常駐エージェント経由でPicoへ即時反映（config.py書き込み・再起動不要）"""

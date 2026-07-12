@@ -211,7 +211,7 @@ def draw_page2(lcd: LCD, page: int, state) -> None:
     from config import PROFILES
     lcd.fill(BLACK)
     pi   = state.profile
-    pcol = PROFILE_COLORS[pi]
+    pcol = PROFILE_COLORS[pi % len(PROFILE_COLORS)]
     _header(lcd, "PROFILE", pcol)
     _vline(lcd)
 
@@ -239,7 +239,7 @@ def draw_page3(lcd: LCD, page: int, state) -> None:
     from config import SWITCH_MAP, PROFILES
     lcd.fill(BLACK)
     pi   = state.profile
-    pcol = PROFILE_COLORS[pi]
+    pcol = PROFILE_COLORS[pi % len(PROFILE_COLORS)]
     _header(lcd, f"SW:{PROFILES[pi]}", pcol)
 
     sws    = SWITCH_MAP[pi]
@@ -277,7 +277,7 @@ def draw_page4(lcd: LCD, page: int, state) -> None:
     from config import ENCODER_MAP, PROFILES
     lcd.fill(BLACK)
     pi   = state.profile
-    pcol = PROFILE_COLORS[pi]
+    pcol = PROFILE_COLORS[pi % len(PROFILE_COLORS)]
     _header(lcd, f"ENC:{PROFILES[pi]}", pcol)
     _vline(lcd)
 
