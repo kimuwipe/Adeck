@@ -1,0 +1,10 @@
+# StreamDeck PC-side dependencies
+# Install: pip install -r requirements.txt
+
+pyserial>=3.5
+pycaw>=20230901
+psutil>=5.9
+comtypes>=1.2
+pyautogui>=0.9.54
+pystray>=0.19
+Pillow>=10.0
