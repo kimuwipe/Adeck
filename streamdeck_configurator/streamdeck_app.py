@@ -553,22 +553,19 @@ class StreamDeckApp(tk.Tk):
                  fg="gray", justify="left").pack(anchor="w", padx=12)
 
     def _open_configurator(self):
-        """別ウィンドウでconfiguratorのフルGUIを開く。
-        ライブ反映コールバックを渡し、エディタ内から即反映できるようにする。"""
-        if not CFG_OK:
-            return
+        """設定エディタ（configurator.py）を別プロセスで開く。
+        CustomTkinter(CTk) の root と本アプリ(tk.Tk)の root 二重化を避けるため
+        別プロセスにする。編集・保存後は「設定を再読込」→「ライブ反映」で反映する。"""
+        import subprocess
+        import sys
+        import os
+        editor = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "configurator.py")
         try:
-            win = cfgmod.App(on_live_apply=self._live_apply_from_editor)
-            win.mainloop()
+            subprocess.Popen([sys.executable, editor],
+                             cwd=os.path.dirname(editor))
         except Exception as e:
             messagebox.showerror("エラー", f"設定エディタを開けません:\n{e}")
-
-    def _live_apply_from_editor(self, cfg: dict) -> bool:
-        """configurator の「ライブ反映」ボタンから呼ばれる。
-        （configurator 側で既に JSON 保存済み）"""
-        self._cfg = cfg
-        self._agent.reload_config()
-        return self._agent.send_live_config(cfg)
 
     def _live_reflect(self):
         """保存済み設定を読み直してPicoへライブ送信する"""

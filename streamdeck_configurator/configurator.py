@@ -1,15 +1,19 @@
-# configurator.py  v1.1
-# StreamDeck GUI 設定アプリ（Windows / Python 3.10+）
-# 依存: 標準ライブラリのみ（tkinter, json, pathlib）
+# configurator.py  v2  (CustomTkinter グリッドUI版)
+# StreamDeck GUI 設定アプリ（Windows / Python 3.12）
+# 依存: customtkinter（pip install customtkinter）
 #
 # 起動: python configurator.py
+# UI: Elgato Stream Deck 風。スイッチ2×4／エンコーダ4個をボタングリッドで表示し、
+#     クリックで選択→下パネルで設定、右パレットからアクションを割り当てる。
 
 from __future__ import annotations   # 古いPythonでも型注釈を許可
 
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import filedialog, messagebox
 import json
 from pathlib import Path
+
+import customtkinter as ctk
 
 APP_TITLE   = "StreamDeck 設定"
 CONFIG_JSON = Path("streamdeck_config.json")
@@ -59,6 +63,31 @@ ARG_ACTIONS = {"URL_OPEN", "CMD_RUN", "TEXT_INPUT"}
 # キー種別 → config.py に書き出すプレフィックス
 _ARG_PREFIX = {"URL_OPEN": "URL", "CMD_RUN": "CMD", "TEXT_INPUT": "TEXT"}
 
+# プロファイル別アクセント色（Pico の PROFILE_COLORS と対応）
+PROFILE_ACCENTS = ["#22d3ee", "#22c55e", "#eab308", "#f97316"]
+
+# 右パレット用のカテゴリ分け（Elgato のアクション一覧風）
+KEY_CATEGORIES = [
+    ("特殊アクション", ["APP_LAUNCH", "URL_OPEN", "CMD_RUN", "TEXT_INPUT"]),
+    ("プロファイル", ["PROFILE_NEXT"]),
+    ("メディア・音量", ["VOLUME_UP", "VOLUME_DOWN", "MUTE",
+                        "MEDIA_PLAY", "MEDIA_NEXT", "MEDIA_PREV"]),
+    ("汎用操作", ["UNDO", "REDO", "SAVE", "ZOOM_IN", "ZOOM_OUT", "ZOOM_FIT",
+                  "TAB_NEXT", "TAB_PREV", "NEW_TAB"]),
+    ("Windows", ["WIN_SNIP", "VDESK_NEXT", "VDESK_PREV",
+                 "WIN_MAX", "TASK_MGR", "WIN_LOCK"]),
+    ("SolidWorks", ["SW_SHORTCUT_BAR", "SW_REBUILD", "SW_REBUILD_FULL",
+                    "SW_NORMAL_TO", "SW_FILTER_CLEAR", "SW_DISPLAY_CYCLE",
+                    "SW_MAGNIFIER", "SW_ISO", "SW_VIEW_NEXT", "SW_VIEW_PREV"]),
+    ("開発", ["SHIFT_F5", "DEV_TERMINAL", "DEV_COMMENT", "DEV_GOTO_DEF",
+              "FONT_UP", "FONT_DOWN"]),
+    ("エージェント", ["MIC_UP", "MIC_DOWN", "MIC_MUTE", "APP_CALC"]),
+    ("ファンクション", ["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10",
+                        "F11", "F12", "F13", "F14", "F15", "F16", "F17", "F18",
+                        "F19", "F20"]),
+    ("無効", ["（なし）"]),
+]
+
 
 def action_value(key, app: str = "", arg: str = ""):
     """キー種別・アプリパス・入力値から、Picoに渡す実際のアクション文字列
@@ -70,6 +99,22 @@ def action_value(key, app: str = "", arg: str = ""):
     if key in ("（なし）", None, ""):
         return None
     return key
+
+
+def short_label(key, app: str = "", arg: str = "") -> str:
+    """グリッドボタンに表示する短いアクション名を返す。"""
+    v = action_value(key, app, arg)
+    if v is None:
+        return "—"
+    if v.startswith("APP:"):
+        return "APP:" + Path(v[4:]).name[:12]
+    if v.startswith("URL:"):
+        return "URL:" + v[4:][:12]
+    if v.startswith("CMD:"):
+        return "CMD:" + v[4:][:12]
+    if v.startswith("TEXT:"):
+        return "TXT:" + v[5:][:12]
+    return v[:16]
 
 
 def action_literal(key: str, app: str, arg: str) -> str:
@@ -238,24 +283,40 @@ def find_pico_drive() -> Path | None:
     return None
 
 
-# ===== GUI アプリ =====
-class App(tk.Tk):
+# ============================================================
+#  GUI アプリ（CustomTkinter・グリッド型）
+# ============================================================
+CARD_BG   = "#2b2b2b"
+CARD_SEL  = "#3a3a3a"
+PANEL_BG  = "#242424"
+
+
+class App(ctk.CTk):
     def __init__(self, on_live_apply=None):
         super().__init__()
+        ctk.set_appearance_mode("dark")
+        try:
+            ctk.set_default_color_theme("dark-blue")
+        except Exception:
+            pass
+
         self.title(APP_TITLE)
-        self.resizable(False, False)
-        self.configure(bg="#F4F4F0")
+        self.geometry("1080x780")
+        self.minsize(960, 700)
 
         # 常駐エージェント経由でPicoへ即時反映するコールバック（統合UIから渡される）
         self._on_live_apply = on_live_apply
-        self.cfg            = default_config()
-        self._current_prof  = 0   # 表示中のプロファイル index
-        self._sw_vars       = []  # [profile][sw] = {key, app}
-        self._enc_vars      = []  # [profile][enc] = {cw,ccw,push, app_*}
+        self.cfg    = default_config()
+        self._pi    = 0                 # 表示中プロファイル index
+        self._sel   = ("sw", 0)         # 選択中の要素
+        self._active_slot = None        # 右パレットの割り当て先スロット
+        self._sw_buttons = []
+        self._enc_cards  = []
 
         self._load_json()
+        self._normalize_cfg()
         self._build_ui()
-        self._refresh_ui()
+        self._select(("sw", 0))
 
     # ---------- JSON ----------
     def _load_json(self):
@@ -270,305 +331,319 @@ class App(tk.Tk):
         with open(CONFIG_JSON, "w", encoding="utf-8") as f:
             json.dump(self.cfg, f, ensure_ascii=False, indent=2)
 
+    def _normalize_cfg(self):
+        """古い設定ファイルに欠けているフィールドを補完する。"""
+        self.cfg.setdefault("profiles", list(PROFILES))
+        self.cfg.setdefault("display", {"brightness": 80})
+        self.cfg.setdefault("auto_profile",
+                            {"enabled": False, "rules": dict(DEFAULT_AUTO_RULES)})
+        n = len(self.cfg["profiles"])
+        for p in range(n):
+            for sw in self.cfg["switches"][p]:
+                sw.setdefault("app", "")
+                sw.setdefault("arg", "")
+            for enc in self.cfg["encoders"][p]:
+                for dk in ("cw", "ccw", "push"):
+                    enc.setdefault(f"app_{dk}", "")
+                    enc.setdefault(f"arg_{dk}", "")
+
+    # ---------- スロット（cfg 内の1アクション）参照 ----------
+    def _slot_fields(self, slot):
+        """slot -> (dict, key_field, app_field, arg_field)"""
+        if slot[0] == "sw":
+            _, pi, si = slot
+            d = self.cfg["switches"][pi][si]
+            return d, "key", "app", "arg"
+        _, pi, ei, dk = slot
+        d = self.cfg["encoders"][pi][ei]
+        return d, dk, f"app_{dk}", f"arg_{dk}"
+
+    def _mirror_enc_common(self, slot, field, value):
+        """ENC1〜3 は全プロファイル共通（config_to_py は profile0 を使う）なので、
+        編集を全プロファイルへ反映して混乱を防ぐ。"""
+        if slot[0] == "enc" and slot[2] < 3:
+            ei = slot[2]
+            for p in range(len(self.cfg["profiles"])):
+                self.cfg["encoders"][p][ei][field] = value
+
     # ---------- UI 構築 ----------
     def _build_ui(self):
-        # タイトルバー
-        bar = tk.Frame(self, bg="#E8E8E4", pady=8)
-        bar.pack(fill="x")
-        tk.Label(bar, text=APP_TITLE, font=("Yu Gothic UI",13,"bold"),
-                 bg="#E8E8E4").pack(side="left", padx=14)
-        self._conn_lbl = tk.Label(bar, text="● Pico未接続",
-                                  font=("Yu Gothic UI",10),
-                                  bg="#E8E8E4", fg="#999")
+        # ---- トップバー ----
+        top = ctk.CTkFrame(self, height=60, corner_radius=0)
+        top.pack(fill="x")
+        ctk.CTkLabel(top, text="🎛  StreamDeck 設定",
+                     font=ctk.CTkFont(size=18, weight="bold")
+                     ).pack(side="left", padx=18, pady=12)
+        self._prof_seg = ctk.CTkSegmentedButton(
+            top, values=self.cfg["profiles"], command=self._on_profile_change)
+        self._prof_seg.set(self.cfg["profiles"][self._pi])
+        self._prof_seg.pack(side="left", padx=10)
+
+        self._conn_lbl = ctk.CTkLabel(top, text="● Pico未接続", text_color="#888")
         self._conn_lbl.pack(side="right", padx=14)
-        tk.Button(bar, text="接続確認", font=("Yu Gothic UI",9),
-                  relief="flat", bg="#D8D8D4",
-                  command=self._check_pico).pack(side="right", padx=4)
+        ctk.CTkButton(top, text="接続確認", width=80,
+                      command=self._check_pico).pack(side="right", padx=4)
 
-        # プロファイルタブ
-        style = ttk.Style(self)
-        style.theme_use("clam")
-        style.configure("TNotebook",     background="#F4F4F0", borderwidth=0)
-        style.configure("TNotebook.Tab", background="#E0E0DC", foreground="#555",
-                        padding=[14,6], font=("Yu Gothic UI",10))
-        style.map("TNotebook.Tab",
-                  background=[("selected","#FFFFFF")],
-                  foreground=[("selected","#1A1A1A")])
+        # ---- 本体：左=エディタ / 右=パレット ----
+        body = ctk.CTkFrame(self, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=12, pady=8)
 
-        nb = ttk.Notebook(self)
-        nb.pack(fill="both", expand=True)
+        right = ctk.CTkFrame(body, width=260)
+        right.pack(side="right", fill="y")
+        right.pack_propagate(False)
+        self._build_palette(right)
 
-        # 各プロファイルタブ
-        self._sw_vars  = [[] for _ in PROFILES]
-        self._enc_vars = [[] for _ in PROFILES]
-        for pi, pname in enumerate(PROFILES):
-            frame = tk.Frame(nb, bg="#FFFFFF")
-            nb.add(frame, text=f"  {pname}  ")
-            self._build_profile_tab(frame, pi)
+        left = ctk.CTkFrame(body, fg_color="transparent")
+        left.pack(side="left", fill="both", expand=True, padx=(0, 10))
 
-        # ディスプレイタブ
-        disp_frame = tk.Frame(nb, bg="#FFFFFF")
-        nb.add(disp_frame, text="  ディスプレイ  ")
-        self._build_display_tab(disp_frame)
-
-        # フッター
-        footer = tk.Frame(self, bg="#E8E8E4", pady=8)
-        footer.pack(fill="x")
-        tk.Button(footer, text="リセット", font=("Yu Gothic UI",10),
-                  relief="flat", bg="#D8D8D4",
-                  command=self._reset, padx=10).pack(side="left", padx=12)
-        tk.Button(footer, text="Picoに書き込む",
-                  font=("Yu Gothic UI",10,"bold"),
-                  relief="flat", bg="#2563EB", fg="white",
-                  activebackground="#1D4ED8",
-                  command=self._write_to_pico, padx=14).pack(side="right", padx=12)
-        # 統合UIから起動された場合のみ「ライブ反映」ボタンを出す
-        if self._on_live_apply:
-            tk.Button(footer, text="ライブ反映（書込なし）",
-                      font=("Yu Gothic UI",10,"bold"),
-                      relief="flat", bg="#16A34A", fg="white",
-                      activebackground="#15803D",
-                      command=self._live_apply, padx=12).pack(side="right", padx=4)
-        tk.Button(footer, text="設定を保存", font=("Yu Gothic UI",10),
-                  relief="flat", bg="#D8D8D4",
-                  command=self._save, padx=10).pack(side="right", padx=4)
-
-    def _build_profile_tab(self, parent: tk.Frame, pi: int):
-        canvas = tk.Canvas(parent, bg="#FFFFFF", highlightthickness=0)
-        scroll = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
-        canvas.configure(yscrollcommand=scroll.set)
-        scroll.pack(side="right", fill="y")
-        canvas.pack(fill="both", expand=True)
-
-        inner = tk.Frame(canvas, bg="#FFFFFF")
-        canvas.create_window((0,0), window=inner, anchor="nw")
-        inner.bind("<Configure>",
-                   lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-
-        # 使い方ヒント
-        tk.Label(inner,
-                 text="URL_OPEN / CMD_RUN / TEXT_INPUT を選ぶと、右の入力欄に "
-                      "URL・コマンド・入力テキストを設定できます。"
-                      "APP_LAUNCH は 📁 ボタンで .exe を選択。",
-                 font=("Yu Gothic UI",8), fg="#888", bg="#FFFFFF",
-                 wraplength=560, justify="left").pack(anchor="w", padx=16, pady=(10,0))
-
-        # スイッチ
-        tk.Label(inner, text="スイッチ（8個）",
-                 font=("Yu Gothic UI",10,"bold"),
-                 bg="#FFFFFF", fg="#555").pack(anchor="w", padx=16, pady=(12,4))
+        # スイッチグリッド 2×4
+        ctk.CTkLabel(left, text="スイッチ",
+                     font=ctk.CTkFont(size=13, weight="bold")
+                     ).pack(anchor="w", padx=6, pady=(6, 4))
+        swgrid = ctk.CTkFrame(left, fg_color="transparent")
+        swgrid.pack()
         for si in range(SW_COUNT):
-            self._build_sw_row(inner, pi, si)
+            r, c = si // 4, si % 4
+            btn = ctk.CTkButton(swgrid, text="", width=118, height=66,
+                                corner_radius=12, fg_color=CARD_BG,
+                                hover_color=CARD_SEL,
+                                font=ctk.CTkFont(size=12),
+                                command=lambda s=si: self._select(("sw", s)))
+            btn.grid(row=r, column=c, padx=6, pady=6)
+            self._sw_buttons.append(btn)
 
-        # エンコーダ
-        tk.Label(inner, text="エンコーダ（4個）",
-                 font=("Yu Gothic UI",10,"bold"),
-                 bg="#FFFFFF", fg="#555").pack(anchor="w", padx=16, pady=(14,4))
+        # エンコーダカード 1×4
+        ctk.CTkLabel(left, text="エンコーダ",
+                     font=ctk.CTkFont(size=13, weight="bold")
+                     ).pack(anchor="w", padx=6, pady=(12, 4))
+        encgrid = ctk.CTkFrame(left, fg_color="transparent")
+        encgrid.pack()
         for ei in range(ENC_COUNT):
-            self._build_enc_row(inner, pi, ei)
+            card = ctk.CTkButton(encgrid, text="", width=118, height=80,
+                                 corner_radius=12, fg_color=CARD_BG,
+                                 hover_color=CARD_SEL,
+                                 font=ctk.CTkFont(size=11),
+                                 command=lambda e=ei: self._select(("enc", e)))
+            card.grid(row=0, column=ei, padx=6, pady=6)
+            self._enc_cards.append(card)
 
-    def _build_sw_row(self, parent, pi, si):
-        row = tk.Frame(parent, bg="#FFFFFF")
-        row.pack(fill="x", padx=16, pady=2)
-        tk.Frame(row, bg="#EAEAE6", height=1).pack(fill="x", pady=(0,4))
+        # 選択要素の設定パネル
+        self._detail = ctk.CTkFrame(left)
+        self._detail.pack(fill="both", expand=True, pady=(12, 0))
 
-        inner = tk.Frame(row, bg="#FFFFFF")
-        inner.pack(fill="x")
+        # ---- フッター ----
+        footer = ctk.CTkFrame(self, height=54, corner_radius=0)
+        footer.pack(fill="x")
 
-        tk.Label(inner, text=f"SW{si+1}", font=("Yu Gothic UI",10,"bold"),
-                 bg="#FFFFFF", width=5, anchor="w").pack(side="left")
+        bf = ctk.CTkFrame(footer, fg_color="transparent")
+        bf.pack(side="left", padx=14, pady=8)
+        ctk.CTkButton(bf, text="リセット", width=80, fg_color="#555",
+                      hover_color="#666", command=self._reset).pack(side="left")
+        ctk.CTkLabel(bf, text="  LCD輝度").pack(side="left", padx=(12, 4))
+        self._bright = ctk.CTkSlider(bf, from_=0, to=100, number_of_steps=100,
+                                     width=130, command=self._on_bright)
+        cur_br = int(self.cfg.get("display", {}).get("brightness", 80))
+        self._bright.set(cur_br)
+        self._bright.pack(side="left")
+        self._bright_lbl = ctk.CTkLabel(bf, text=f"{cur_br}%", width=44)
+        self._bright_lbl.pack(side="left", padx=6)
 
-        key_var = tk.StringVar()
-        key_cb  = ttk.Combobox(inner, textvariable=key_var,
-                                values=KEY_OPTIONS, width=20, state="readonly",
-                                font=("Yu Gothic UI",10))
-        key_cb.pack(side="left", padx=(8,6))
+        ctk.CTkButton(footer, text="Picoに書き込む",
+                      command=self._write_to_pico).pack(side="right", padx=12, pady=8)
+        if self._on_live_apply:
+            ctk.CTkButton(footer, text="ライブ反映", fg_color="#16a34a",
+                          hover_color="#15803d",
+                          command=self._live_apply).pack(side="right", padx=4)
+        ctk.CTkButton(footer, text="設定を保存", fg_color="#555", hover_color="#666",
+                      command=self._save).pack(side="right", padx=4)
 
-        app_var = tk.StringVar()
-        app_btn = tk.Button(inner, text="📁 .exe",
-                            font=("Yu Gothic UI",9), relief="flat",
-                            bg="#EEEEE8", activebackground="#DDDDD8",
-                            command=lambda p=pi, s=si: self._browse_sw(p, s))
-        app_btn.pack(side="left", padx=4)
+        self._refresh_grid()
 
-        app_lbl = tk.Label(inner, textvariable=app_var,
-                           font=("Yu Gothic UI",9), fg="#2563EB",
-                           bg="#FFFFFF", anchor="w", width=10)
-        app_lbl.pack(side="left", padx=4)
+    def _build_palette(self, parent):
+        ctk.CTkLabel(parent, text="アクション一覧",
+                     font=ctk.CTkFont(size=13, weight="bold")
+                     ).pack(anchor="w", padx=12, pady=(10, 0))
+        ctk.CTkLabel(parent, text="クリックで選択中の要素へ割り当て",
+                     font=ctk.CTkFont(size=10), text_color="#888"
+                     ).pack(anchor="w", padx=12, pady=(0, 4))
+        sf = ctk.CTkScrollableFrame(parent, fg_color="transparent")
+        sf.pack(fill="both", expand=True, padx=4, pady=4)
+        for cat, keys in KEY_CATEGORIES:
+            ctk.CTkLabel(sf, text=cat, font=ctk.CTkFont(size=11, weight="bold"),
+                         text_color="#8ab4d8").pack(anchor="w", padx=6, pady=(8, 2))
+            for k in keys:
+                ctk.CTkButton(sf, text=k, height=26, anchor="w",
+                              fg_color="#333333", hover_color="#2f5d3a",
+                              font=ctk.CTkFont(size=11),
+                              command=lambda kk=k: self._assign_to_active(kk)
+                              ).pack(fill="x", padx=6, pady=1)
 
-        # URL / コマンド / テキスト 入力欄
-        arg_var   = tk.StringVar()
-        arg_entry = tk.Entry(inner, textvariable=arg_var,
-                             font=("Yu Gothic UI",9), width=26)
-        arg_entry.pack(side="left", padx=4, fill="x", expand=True)
+    # ---------- 選択・詳細パネル ----------
+    def _select(self, sel):
+        self._sel = sel
+        if sel[0] == "sw":
+            self._active_slot = ("sw", self._pi, sel[1])
+        else:
+            self._active_slot = ("enc", self._pi, sel[1], "push")
+        self._refresh_grid()
+        self._build_detail()
 
-        self._sw_vars[pi].append({"key": key_var, "app": app_var, "arg": arg_var})
+    def _build_detail(self):
+        for w in self._detail.winfo_children():
+            w.destroy()
 
-    def _build_enc_row(self, parent, pi, ei):
-        row = tk.Frame(parent, bg="#FFFFFF")
-        row.pack(fill="x", padx=16, pady=2)
-        tk.Frame(row, bg="#EAEAE6", height=1).pack(fill="x", pady=(0,4))
+        accent = PROFILE_ACCENTS[self._pi % len(PROFILE_ACCENTS)]
+        if self._sel[0] == "sw":
+            si = self._sel[1]
+            ctk.CTkLabel(self._detail, text=f"SW{si+1} の設定",
+                         font=ctk.CTkFont(size=15, weight="bold"),
+                         text_color=accent).pack(anchor="w", padx=14, pady=(12, 6))
+            self._make_action_editor(self._detail, ("sw", self._pi, si), "アクション")
+        else:
+            ei = self._sel[1]
+            note = "（ENC1〜3は全プロファイル共通）" if ei < 3 else ""
+            ctk.CTkLabel(self._detail, text=f"ENC{ei+1} の設定 {note}",
+                         font=ctk.CTkFont(size=15, weight="bold"),
+                         text_color=accent).pack(anchor="w", padx=14, pady=(12, 6))
+            for dk, dlabel in [("cw", "CW 右回し"),
+                               ("ccw", "CCW 左回し"),
+                               ("push", "Push 押込み")]:
+                self._make_action_editor(
+                    self._detail, ("enc", self._pi, ei, dk), dlabel)
 
-        header = tk.Frame(row, bg="#FFFFFF")
-        header.pack(fill="x")
-        tk.Label(header, text=f"ENC{ei+1}",
-                 font=("Yu Gothic UI",10,"bold"),
-                 bg="#FFFFFF").pack(side="left")
+    def _make_action_editor(self, parent, slot, title):
+        d, kf, af, argf = self._slot_fields(slot)
+        row = ctk.CTkFrame(parent, fg_color=PANEL_BG, corner_radius=8)
+        row.pack(fill="x", padx=14, pady=4)
 
-        dirs   = [("CW（時計回り）","cw"), ("CCW（反時計回り）","ccw"), ("Push（押し込み）","push")]
-        d_vars = {}
-        for dlabel, dkey in dirs:
-            sub = tk.Frame(row, bg="#FFFFFF")
-            sub.pack(fill="x", padx=24, pady=2)
+        ctk.CTkLabel(row, text=title, width=96, anchor="w"
+                     ).pack(side="left", padx=(10, 6), pady=8)
 
-            tk.Label(sub, text=dlabel, font=("Yu Gothic UI",9),
-                     fg="#666", bg="#FFFFFF", width=16,
-                     anchor="w").pack(side="left")
+        key_var = tk.StringVar(value=d.get(kf) or "（なし）")
+        ctk.CTkOptionMenu(row, values=KEY_OPTIONS, variable=key_var, width=170,
+                          command=lambda v, s=slot: self._on_key_change(s, v)
+                          ).pack(side="left", padx=4)
 
-            kv  = tk.StringVar()
-            kcb = ttk.Combobox(sub, textvariable=kv,
-                                values=KEY_OPTIONS, width=20, state="readonly",
-                                font=("Yu Gothic UI",10))
-            kcb.pack(side="left", padx=(4,6))
+        ctk.CTkButton(row, text="📁", width=38,
+                      command=lambda s=slot: self._browse(s)).pack(side="left", padx=4)
 
-            av   = tk.StringVar()
-            abtn = tk.Button(sub, text="📁 .exe",
-                             font=("Yu Gothic UI",9), relief="flat",
-                             bg="#EEEEE8", activebackground="#DDDDD8",
-                             command=lambda p=pi, e=ei, d=dkey: self._browse_enc(p,e,d))
-            abtn.pack(side="left", padx=4)
+        arg_var = tk.StringVar(value=d.get(argf, ""))
+        ent = ctk.CTkEntry(row, textvariable=arg_var,
+                           placeholder_text="URL / コマンド / テキスト")
+        ent.pack(side="left", padx=6, fill="x", expand=True)
+        ent.bind("<KeyRelease>",
+                 lambda e, s=slot, v=arg_var: self._on_arg_change(s, v.get()))
 
-            al = tk.Label(sub, textvariable=av,
-                          font=("Yu Gothic UI",9), fg="#2563EB",
-                          bg="#FFFFFF", anchor="w", width=10)
-            al.pack(side="left", padx=4)
+        appname = Path(d.get(af, "")).name if d.get(af) else ""
+        if appname:
+            ctk.CTkLabel(row, text=appname, text_color="#7aa2f7", width=90,
+                         anchor="w").pack(side="left", padx=4)
 
-            # URL / コマンド / テキスト 入力欄
-            gv = tk.StringVar()
-            ge = tk.Entry(sub, textvariable=gv,
-                          font=("Yu Gothic UI",9), width=24)
-            ge.pack(side="left", padx=4, fill="x", expand=True)
+    # ---------- 変更ハンドラ ----------
+    def _on_key_change(self, slot, value):
+        d, kf, af, argf = self._slot_fields(slot)
+        d[kf] = value
+        self._mirror_enc_common(slot, kf, value)
+        self._active_slot = slot
+        self._refresh_grid()
 
-            d_vars[dkey] = {"key": kv, "app": av, "arg": gv}
+    def _on_arg_change(self, slot, text):
+        d, kf, af, argf = self._slot_fields(slot)
+        d[argf] = text
+        self._mirror_enc_common(slot, argf, text)
+        self._active_slot = slot
+        self._refresh_grid()
 
-        self._enc_vars[pi].append(d_vars)
-
-    def _build_display_tab(self, parent):
-        frame = tk.Frame(parent, bg="#FFFFFF", padx=24, pady=24)
-        frame.pack(fill="both", expand=True)
-
-        tk.Label(frame, text="バックライト輝度",
-                 font=("Yu Gothic UI",10), bg="#FFFFFF").pack(anchor="w")
-
-        self._brightness_var = tk.IntVar(value=80)
-        sf = tk.Frame(frame, bg="#FFFFFF")
-        sf.pack(fill="x", pady=8)
-        sl = tk.Scale(sf, from_=0, to=100, orient="horizontal",
-                      variable=self._brightness_var,
-                      font=("Yu Gothic UI",9), bg="#FFFFFF",
-                      highlightthickness=0, length=300,
-                      command=lambda v: self._brl.config(text=f"{int(float(v))}%"))
-        sl.pack(side="left")
-        self._brl = tk.Label(sf, text="80%", font=("Yu Gothic UI",10),
-                             bg="#FFFFFF", fg="#2563EB", width=5)
-        self._brl.pack(side="left", padx=8)
-
-    # ---------- UI ↔ cfg 同期 ----------
-    def _refresh_ui(self):
-        for pi in range(len(PROFILES)):
-            sws = self.cfg["switches"][pi]
-            for si, sw in enumerate(sws):
-                if si >= len(self._sw_vars[pi]):
-                    break
-                v = self._sw_vars[pi][si]
-                k = sw.get("key","（なし）") or "（なし）"
-                v["key"].set(k)
-                v["app"].set(Path(sw.get("app","")).name if sw.get("app") else "")
-                v["arg"].set(sw.get("arg",""))
-
-            encs = self.cfg["encoders"][pi]
-            for ei, enc in enumerate(encs):
-                if ei >= len(self._enc_vars[pi]):
-                    break
-                dv = self._enc_vars[pi][ei]
-                for dk in ("cw","ccw","push"):
-                    k = enc.get(dk,"（なし）") or "（なし）"
-                    dv[dk]["key"].set(k)
-                    akey = f"app_{dk}"
-                    dv[dk]["app"].set(
-                        Path(enc.get(akey,"")).name if enc.get(akey) else "")
-                    dv[dk]["arg"].set(enc.get(f"arg_{dk}",""))
-
-        self._brightness_var.set(self.cfg.get("display",{}).get("brightness",80))
-        self._brl.config(text=f"{self._brightness_var.get()}%")
-
-    def _sync_cfg(self):
-        for pi in range(len(PROFILES)):
-            for si in range(SW_COUNT):
-                if si >= len(self._sw_vars[pi]):
-                    break
-                v = self._sw_vars[pi][si]
-                self.cfg["switches"][pi][si]["key"] = v["key"].get()
-                self.cfg["switches"][pi][si]["arg"] = v["arg"].get()
-
-            for ei in range(ENC_COUNT):
-                if ei >= len(self._enc_vars[pi]):
-                    break
-                dv = self._enc_vars[pi][ei]
-                for dk in ("cw","ccw","push"):
-                    self.cfg["encoders"][pi][ei][dk] = dv[dk]["key"].get()
-                    self.cfg["encoders"][pi][ei][f"arg_{dk}"] = dv[dk]["arg"].get()
-
-        self.cfg["display"]["brightness"] = self._brightness_var.get()
-
-    # ---------- ファイル選択 ----------
-    def _browse_sw(self, pi, si):
+    def _browse(self, slot):
         path = filedialog.askopenfilename(
             title="アプリを選択",
-            filetypes=[("実行ファイル","*.exe"),("全ファイル","*.*")])
-        if path:
-            self.cfg["switches"][pi][si]["app"] = path
-            self.cfg["switches"][pi][si]["key"] = "APP_LAUNCH"
-            self._sw_vars[pi][si]["app"].set(Path(path).name)
-            self._sw_vars[pi][si]["key"].set("APP_LAUNCH")
+            filetypes=[("実行ファイル", "*.exe"), ("全ファイル", "*.*")])
+        if not path:
+            return
+        d, kf, af, argf = self._slot_fields(slot)
+        d[af] = path
+        d[kf] = "APP_LAUNCH"
+        self._mirror_enc_common(slot, af, path)
+        self._mirror_enc_common(slot, kf, "APP_LAUNCH")
+        self._active_slot = slot
+        self._build_detail()
+        self._refresh_grid()
 
-    def _browse_enc(self, pi, ei, dk):
-        path = filedialog.askopenfilename(
-            title="アプリを選択",
-            filetypes=[("実行ファイル","*.exe"),("全ファイル","*.*")])
-        if path:
-            akey = f"app_{dk}"
-            self.cfg["encoders"][pi][ei][akey] = path
-            self.cfg["encoders"][pi][ei][dk]   = "APP_LAUNCH"
-            self._enc_vars[pi][ei][dk]["app"].set(Path(path).name)
-            self._enc_vars[pi][ei][dk]["key"].set("APP_LAUNCH")
+    def _assign_to_active(self, key):
+        if not self._active_slot:
+            return
+        d, kf, af, argf = self._slot_fields(self._active_slot)
+        d[kf] = key
+        self._mirror_enc_common(self._active_slot, kf, key)
+        self._build_detail()
+        self._refresh_grid()
+
+    def _on_bright(self, v):
+        b = int(float(v))
+        self.cfg.setdefault("display", {})["brightness"] = b
+        self._bright_lbl.configure(text=f"{b}%")
+
+    # ---------- グリッド表示更新 ----------
+    def _refresh_grid(self):
+        accent = PROFILE_ACCENTS[self._pi % len(PROFILE_ACCENTS)]
+        sws = self.cfg["switches"][self._pi]
+        for si, btn in enumerate(self._sw_buttons):
+            sw = sws[si]
+            lbl = short_label(sw.get("key"), sw.get("app", ""), sw.get("arg", ""))
+            selected = (self._sel == ("sw", si))
+            btn.configure(text=f"SW{si+1}\n{lbl}",
+                          fg_color=(CARD_SEL if selected else CARD_BG),
+                          border_width=(2 if selected else 0),
+                          border_color=accent)
+        encs = self.cfg["encoders"][self._pi]
+        for ei, card in enumerate(self._enc_cards):
+            enc = encs[ei]
+            cw = short_label(enc.get("cw"), enc.get("app_cw", ""), enc.get("arg_cw", ""))
+            pu = short_label(enc.get("push"), enc.get("app_push", ""), enc.get("arg_push", ""))
+            selected = (self._sel == ("enc", ei))
+            card.configure(text=f"ENC{ei+1}\n↻ {cw}\nP {pu}",
+                           fg_color=(CARD_SEL if selected else CARD_BG),
+                           border_width=(2 if selected else 0),
+                           border_color=accent)
+
+    # ---------- プロファイル切替 ----------
+    def _on_profile_change(self, name):
+        try:
+            self._pi = self.cfg["profiles"].index(name)
+        except ValueError:
+            self._pi = 0
+        self._select(("sw", 0))
 
     # ---------- Pico 操作 ----------
     def _check_pico(self):
         drive = find_pico_drive()
         if drive:
-            self._conn_lbl.config(text=f"● Pico接続中 ({drive})", fg="#16A34A")
+            self._conn_lbl.configure(text=f"● Pico接続中 ({drive})",
+                                     text_color="#22c55e")
         else:
-            self._conn_lbl.config(text="● Pico未接続", fg="#DC2626")
-            messagebox.showwarning("未接続",
+            self._conn_lbl.configure(text="● Pico未接続", text_color="#ef4444")
+            messagebox.showwarning(
+                "未接続",
                 "Pico が見つかりません。\n"
                 "MicroPython を書き込み済みの Pico を USB で接続してください。")
 
     def _save(self):
-        self._sync_cfg()
         self._save_json()
         messagebox.showinfo("保存完了", f"{CONFIG_JSON} に保存しました。")
 
     def _reset(self):
         if messagebox.askyesno("リセット", "全プロファイルをデフォルトに戻しますか？"):
             self.cfg = default_config()
-            self._refresh_ui()
+            self._pi = 0
+            self._prof_seg.set(self.cfg["profiles"][0])
+            self._bright.set(self.cfg["display"]["brightness"])
+            self._bright_lbl.configure(text=f"{self.cfg['display']['brightness']}%")
+            self._select(("sw", 0))
 
     def _live_apply(self):
         """常駐エージェント経由でPicoへ即時反映（config.py書き込み・再起動不要）"""
         if not self._on_live_apply:
             return
-        self._sync_cfg()
         self._save_json()
         try:
             ok = self._on_live_apply(self.cfg)
@@ -584,7 +659,6 @@ class App(tk.Tk):
                 "統合アプリでPicoに接続されているか確認してください。")
 
     def _write_to_pico(self):
-        self._sync_cfg()
         self._save_json()
         drive = find_pico_drive()
         if not drive:

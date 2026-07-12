@@ -86,9 +86,12 @@ ST7789V2の制御は情報が少なく、長時間デバッグして確定した
   - タブUI: 状態/プロファイル設定/ディスプレイ/ログ
   - システムトレイ常駐（pystray）、Windows自動起動対応
 - `agent.py` — 常駐エージェント機能（音量/マイク/天気/アプリ取得、キー送信）
-- `configurator.py` — 設定GUI（キー割り当て、Picoへ書き込み）
+- `configurator.py` — 設定GUI（CustomTkinter・Elgato風グリッドUI）。
+  スイッチ2×4／エンコーダ4個をボタングリッド表示、クリックで選択→下パネルで設定、
+  右パレットからアクション割り当て。統合UIからは別プロセスで起動（CTk/tk root二重化回避）
 - `autostart.py` — Windows自動起動の登録/解除
-- `requirements.txt` — 依存: pyserial, pycaw, psutil, comtypes, pyautogui, pystray, Pillow
+- `requirements.txt` — 依存: pyserial, pycaw, psutil, comtypes, pyautogui,
+  pystray, Pillow, customtkinter（グリッドUI）, pyperclip（任意・日本語TEXT入力）
 
 ### PC側の重要な知見
 

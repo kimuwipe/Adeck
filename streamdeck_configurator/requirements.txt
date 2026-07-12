@@ -8,5 +8,7 @@ comtypes>=1.2
 pyautogui>=0.9.54
 pystray>=0.19
 Pillow>=10.0
+# Modern dark grid UI for the configurator (Elgato-style editor)
+customtkinter>=5.2
 # Optional: clipboard paste for non-ASCII (Japanese) TEXT_INPUT actions
 pyperclip>=1.8
