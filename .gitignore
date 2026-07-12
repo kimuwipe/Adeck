@@ -12,3 +12,7 @@ streamdeck_configurator/streamdeck_config.json
 build/
 dist/
 *.spec
+
+# 重複バックアップ（リポジトリには不要）
+files/
+files.zip
