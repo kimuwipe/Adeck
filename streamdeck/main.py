@@ -25,10 +25,13 @@ _poll = select.poll()
 _poll.register(sys.stdin, select.POLLIN)
 
 def serial_send(data: dict):
+    # MicroPython の json.dumps は ensure_ascii 等のキーワード引数を受け付けない
+    # （渡すと TypeError で送信が黙って失敗する）。素の dumps は非ASCIIも
+    # UTF-8 のまま出力するので PC 側 readline().decode("utf-8") でそのまま読める。
     try:
-        sys.stdout.write(json.dumps(data, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
+        sys.stdout.write(json.dumps(data) + "\n")
+    except Exception as e:
+        print("[serial_send ERR]", e)
 
 def serial_recv():
     """ノンブロッキング受信。データが無ければ即 None を返す。"""

@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import time
 import threading
 import queue
@@ -365,7 +366,7 @@ class StreamDeckApp(ctk.CTk):
         vals = ctk.CTkFrame(self, fg_color="transparent")
         vals.pack(fill="x", padx=14, pady=(4, 2))
         self._tabsel = ctk.CTkSegmentedButton(
-            vals, values=["設定", "オプション", "ログ"], command=self._select_tab)
+            vals, values=["設定", "オプション"], command=self._select_tab)
         self._tabsel.set("設定")
         self._tabsel.pack(side="right")
         self.lbl_vol = ctk.CTkLabel(vals, text="音量: —")
@@ -376,9 +377,29 @@ class StreamDeckApp(ctk.CTk):
         for w in (self.lbl_vol, self.lbl_mic, self.lbl_wx, self.lbl_prof):
             w.pack(side="left", padx=(0, 20))
 
+        # ===== 下部：常時表示ログパネル（どのタブでも見える）=====
+        self._log_collapsed = False
+        logwrap = ctk.CTkFrame(self)
+        logwrap.pack(side="bottom", fill="x", padx=8, pady=(0, 8))
+        loghdr = ctk.CTkFrame(logwrap, fg_color="transparent")
+        loghdr.pack(fill="x")
+        ctk.CTkLabel(loghdr, text="ログ",
+                     font=ctk.CTkFont(size=12, weight="bold")
+                     ).pack(side="left", padx=8, pady=2)
+        ctk.CTkButton(loghdr, text="クリア", width=60, height=24, fg_color="#555",
+                      hover_color="#666", command=self._clear_log
+                      ).pack(side="right", padx=4)
+        self._log_toggle_btn = ctk.CTkButton(
+            loghdr, text="▼ 隠す", width=70, height=24, fg_color="#555",
+            hover_color="#666", command=self._toggle_log)
+        self._log_toggle_btn.pack(side="right", padx=4)
+        self.txt_log = ctk.CTkTextbox(
+            logwrap, height=150, font=ctk.CTkFont(family="Consolas", size=12))
+        self.txt_log.pack(fill="x", padx=4, pady=(0, 4))
+
         # ===== コンテンツ（自前タブ切替でページを出し分け）=====
         container = ctk.CTkFrame(self, fg_color="transparent")
-        container.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        container.pack(fill="both", expand=True, padx=8, pady=(0, 4))
         self._pages = {}
 
         page_edit = ctk.CTkFrame(container, fg_color="transparent")
@@ -395,11 +416,16 @@ class StreamDeckApp(ctk.CTk):
         self._build_options_tab(page_opt)
         self._pages["オプション"] = page_opt
 
-        page_log = ctk.CTkFrame(container, fg_color="transparent")
-        self._build_log_tab(page_log)
-        self._pages["ログ"] = page_log
-
         self._select_tab("設定")
+
+    def _toggle_log(self):
+        if self._log_collapsed:
+            self.txt_log.pack(fill="x", padx=4, pady=(0, 4))
+            self._log_toggle_btn.configure(text="▼ 隠す")
+        else:
+            self.txt_log.pack_forget()
+            self._log_toggle_btn.configure(text="▲ 表示")
+        self._log_collapsed = not self._log_collapsed
 
     def _select_tab(self, name):
         for fr in self._pages.values():
@@ -435,12 +461,6 @@ class StreamDeckApp(ctk.CTk):
         note = ("※ ×ボタンでタスクトレイに最小化して常駐します"
                 if TRAY_OK else "※ pystray未導入のためトレイ常駐は無効です")
         ctk.CTkLabel(f, text=note, text_color="#888").pack(anchor="w", **pad)
-
-    def _build_log_tab(self, f):
-        self.txt_log = ctk.CTkTextbox(f, font=ctk.CTkFont(family="Consolas", size=12))
-        self.txt_log.pack(fill="both", expand=True, padx=8, pady=8)
-        ctk.CTkButton(f, text="クリア", width=80, command=self._clear_log
-                      ).pack(anchor="e", padx=8, pady=(0, 8))
 
     # ---- オプション操作 ----
     def _toggle_autostart(self):
@@ -592,6 +612,64 @@ class StreamDeckApp(ctk.CTk):
         self.destroy()
 
 
+# ============================================================
+#  多重起動防止（Windows 名前付きミューテックス）
+# ============================================================
+_MUTEX_NAME = "StreamDeckController_SingleInstance_Mutex"
+_single_instance_handle = None   # プロセス終了までミューテックスを保持
+
+
+def acquire_single_instance() -> bool:
+    """まだ起動していなければ True。既に起動中なら False。
+    ミューテックスは _single_instance_handle でプロセス生存中ずっと保持する
+    （ハンドルを開いている間だけ他プロセスから存在が見える）。"""
+    global _single_instance_handle
+    try:
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.windll.kernel32
+        kernel32.CreateMutexW.restype = wintypes.HANDLE
+        kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL,
+                                          wintypes.LPCWSTR]
+        ERROR_ALREADY_EXISTS = 183
+        _single_instance_handle = kernel32.CreateMutexW(None, False, _MUTEX_NAME)
+        return kernel32.GetLastError() != ERROR_ALREADY_EXISTS
+    except Exception:
+        # ミューテックスが使えない環境ではチェックをスキップ（従来どおり起動）
+        return True
+
+
+def _focus_existing_window():
+    """既存インスタンスのウィンドウを前面に復帰させる（ベストエフォート）。"""
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        hwnd = user32.FindWindowW(None, "StreamDeck Controller")
+        if hwnd:
+            user32.ShowWindow(hwnd, 9)        # SW_RESTORE
+            user32.SetForegroundWindow(hwnd)
+    except Exception:
+        pass
+
+
+def _notify_already_running():
+    try:
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(
+            0,
+            "StreamDeck Controller は既に起動しています。\n"
+            "タスクトレイのアイコンから表示できます。",
+            "StreamDeck Controller",
+            0x40)   # MB_ICONINFORMATION
+    except Exception:
+        pass
+
+
 if __name__ == "__main__":
+    # 二重起動を防止：既に起動中なら既存ウィンドウを前面化して静かに終了
+    if not acquire_single_instance():
+        _focus_existing_window()
+        _notify_already_running()
+        sys.exit(0)
     app = StreamDeckApp()
     app.mainloop()
