@@ -16,3 +16,9 @@ dist/
 # 重複バックアップ（リポジトリには不要）
 files/
 files.zip
+
+# 配布バイナリはGitHub Releasesで配布（リポジトリには含めない）
+StreamDeckController.exe
+_internal/
+_internal.zip
+*.zip
