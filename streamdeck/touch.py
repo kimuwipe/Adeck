@@ -26,16 +26,43 @@ GESTURE_SWIPE_DOWN = "swipe_down"
 _SWIPE_THRESHOLD = 30
 
 
+# CST816 ジェスチャーレジスタ(0x01)の値 → ジェスチャー定数
+# ※実機で確認したコード（ソフト回転済み・横向き画面基準）:
+#   0x01=左→右, 0x02=右→左, 0x03=下→上, 0x04=上→下, 0x05=タップ
+# 横スワイプでページ送りにするため:
+#   右→左(0x02)=SWIPE_LEFT→次ページ / 左→右(0x01)=SWIPE_RIGHT→前ページ
+_GESTURE_MAP = {
+    0x01: GESTURE_SWIPE_RIGHT,
+    0x02: GESTURE_SWIPE_LEFT,
+    0x03: GESTURE_SWIPE_UP,
+    0x04: GESTURE_SWIPE_DOWN,
+    0x05: GESTURE_TAP,
+}
+
+_REG_MOTIONMASK = 0xEC   # bit1 EnConUD, bit2 EnConLR（スライドジェスチャー有効化）
+
+
 class TouchPanel:
     def __init__(self, i2c: I2C, irq_pin: int = None):
         self._i2c     = i2c
         self._addr    = _TOUCH_ADDR
         self._irq     = Pin(irq_pin, Pin.IN) if irq_pin is not None else None
-        # タッチ開始座標（スワイプ判定用）
-        self._start_x  = None
-        self._start_y  = None
-        self._start_ms = 0
-        self._touching = False
+        # IC内蔵のジェスチャー判定（レジスタ0x01）を使う。前回値でエッジ検出。
+        self._prev_gesture = 0
+        self._enable_gestures()
+
+    def _enable_gestures(self):
+        """CST816 のスライドジェスチャー検出を有効化する。"""
+        try:
+            self._i2c.writeto_mem(self._addr, _REG_MOTIONMASK, bytes([0x06]))
+        except OSError:
+            pass
+
+    def _read_gesture(self) -> int:
+        try:
+            return self._i2c.readfrom_mem(self._addr, _REG_GESTURE, 1)[0]
+        except OSError:
+            return 0
 
     def _is_touched(self) -> bool:
         if self._irq is not None:
@@ -56,48 +83,14 @@ class TouchPanel:
             return None
 
     def update(self) -> str:
-        """
-        タッチ状態を更新してジェスチャーを返す。
-        タッチ中は GESTURE_NONE、離したタイミングでジェスチャーを返す。
-        """
-        touched = self._is_touched()
-
-        if touched and not self._touching:
-            # タッチ開始
-            pos = self._read_xy()
-            if pos:
-                self._start_x  = pos[0]
-                self._start_y  = pos[1]
-                self._start_ms = time.ticks_ms()
-                self._touching = True
-
-        elif not touched and self._touching:
-            # タッチ終了 → ジェスチャー判定
-            self._touching = False
-            if self._start_x is None:
-                return GESTURE_NONE
-
-            pos = self._read_xy()
-            if pos is None:
-                # 離した瞬間は座標取れないことがあるためタップとして扱う
-                return GESTURE_TAP
-
-            end_x, end_y = pos
-            dx = end_x - self._start_x
-            dy = end_y - self._start_y
-            duration = time.ticks_diff(time.ticks_ms(), self._start_ms)
-
-            # 移動量が小さければタップ
-            if abs(dx) < _SWIPE_THRESHOLD and abs(dy) < _SWIPE_THRESHOLD:
-                return GESTURE_TAP
-
-            # 主移動方向でスワイプ判定
-            if abs(dx) >= abs(dy):
-                return GESTURE_SWIPE_RIGHT if dx > 0 else GESTURE_SWIPE_LEFT
-            else:
-                return GESTURE_SWIPE_DOWN if dy > 0 else GESTURE_SWIPE_UP
-
-        return GESTURE_NONE
+        """タッチICのジェスチャーレジスタ(0x01)を読み、認識されたジェスチャーを返す。
+        同じ値が続く間は無反応にし、0→ジェスチャー のエッジで1回だけ返す
+        （座標の連続取得に依存しないため、遅いポーリングでもスワイプが成立する）。"""
+        g = self._read_gesture()
+        if g == self._prev_gesture:
+            return GESTURE_NONE
+        self._prev_gesture = g
+        return _GESTURE_MAP.get(g, GESTURE_NONE)
 
 
 class TouchManager:

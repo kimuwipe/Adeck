@@ -520,6 +520,25 @@ def _send_hotkey(combo: str):
         print(f"[HOTKEY ERROR] {e}")
 
 
+def _press_hotkey(mods, key):
+    """修飾キーを確実に保持してから本キーを押す。
+    pyautogui.hotkey は間隔0で送るため Ctrl+Win+←/→ 等のシステム
+    ショートカットを取りこぼす（Ctrlが滑って Win+← のウィンドウ整列に化ける）
+    ことがある。明示的な keyDown/keyUp＋短い待ちで確実化する。"""
+    down = []
+    try:
+        for m in mods:
+            pyautogui.keyDown(m)
+            down.append(m)
+        time.sleep(0.04)
+        pyautogui.press(key)
+        time.sleep(0.02)
+    finally:
+        # 例外時も含め、押した修飾キーは必ず離す（キー固着防止）
+        for m in reversed(down):
+            pyautogui.keyUp(m)
+
+
 def send_key(action: str):
     """アクション文字列を処理する。プレフィックス付きは専用処理へ、
     それ以外は pyautogui でキー送信する。"""
@@ -547,7 +566,7 @@ def send_key(action: str):
     key, mods = entry
     try:
         if mods:
-            pyautogui.hotkey(*mods, key)
+            _press_hotkey(mods, key)
         else:
             pyautogui.press(key)
         print(f"[KEY] {action} → {mods}+{key}")
