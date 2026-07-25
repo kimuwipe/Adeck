@@ -237,13 +237,12 @@ while True:
         if sw_ok(idx):
             sws    = current_switches()
             action = sws[idx] if idx < len(sws) else None
-            print(f"[SW{idx+1}] {action}")
             dbg_led.flash()          # デバッグLED: ワンショット点灯
             serial_send({"type": "button", "sw": idx,
                          "action": action or "", "profile": profile_name()})
             handle_action(action)
-            state.dirty0 = True
-            state.dirty1 = True
+            # スイッチ押下では表示内容は変わらないので再描画しない（追従性優先）。
+            # プロファイル切替(SW1=PROFILE_NEXT)は next_profile 側で dirty を立てる。
 
     # ── エンコーダ Push
     for idx in mcp.get_push_events():
@@ -268,15 +267,16 @@ while True:
                     dbg_led.enc_brighter()
                 else:
                     dbg_led.enc_dimmer()
-                print(f"[DBG LED] {dbg_led.brightness_pct()}%")
                 serial_send({"type": "button", "enc": i, "dir": direction,
                              "action": action or "", "profile": profile_name()})
                 handle_action(action)
 
-    # ── 画面更新（dirty or 15ループ毎 ≈150ms）
-    # 共有フレームバッファのため「描画→転送」を1画面ずつ順に行う
+    # ── 画面更新
+    # 基本は dirty（状態変化時）のみ再描画。描画はSPI転送でループをブロックする
+    # ため、変化が無い時は描画しない＝入力(ボタン/タッチ/エンコーダ)の追従が良い。
+    # force は保険の定期リフレッシュ（低頻度）。共有バッファのため1画面ずつ処理。
     _draw_cnt += 1
-    force = _draw_cnt >= 15
+    force = _draw_cnt >= 200      # 保険の全画面リフレッシュ（頻度は低く）
 
     if state.dirty0 or force:
         draw_page(disp.lcd0, state.page0, state)
@@ -292,4 +292,4 @@ while True:
         _draw_cnt = 0
 
     dbg_led.update()     # デバッグLED ワンショット消灯チェック
-    time.sleep_ms(10)
+    time.sleep_ms(3)     # 入力の追従性向上（旧10ms→3ms）
