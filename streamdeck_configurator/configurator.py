@@ -232,6 +232,37 @@ DEFAULT_AUTO_RULES = {
 }
 
 
+# ===== AI（Copilot / Claude Code）用プロファイル =====
+# キー割り当ては VS Code 標準ショートカット前提。環境に合わせてエディタで調整可。
+def _ai_switches():
+    return [
+        {"key": "PROFILE_NEXT", "app": "", "arg": ""},        # SW1: プロファイル切替
+        {"key": "HOTKEY", "app": "", "arg": "ctrl i"},        # SW2: インラインチャット
+        {"key": "HOTKEY", "app": "", "arg": "ctrl alt i"},    # SW3: Copilotチャット
+        {"key": "HOTKEY", "app": "", "arg": "ctrl shift p"},  # SW4: コマンドパレット
+        {"key": "HOTKEY", "app": "", "arg": "ctrl `"},        # SW5: ターミナル開閉
+        {"key": "HOTKEY", "app": "", "arg": "ctrl shift `"},  # SW6: 新規ターミナル
+        {"key": "CMD_RUN", "app": "", "arg": "wt claude"},    # SW7: Claude Code起動
+        {"key": "HOTKEY", "app": "", "arg": "esc"},           # SW8: 却下/中断
+    ]
+
+
+def _ai_encoders():
+    # ENC1〜3は全プロファイル共通（config_to_pyがprofile0を使う）なので合わせる。
+    common = [("VOLUME_UP", "VOLUME_DOWN", "MUTE"),
+              ("UNDO", "REDO", "SAVE"),
+              ("ZOOM_IN", "ZOOM_OUT", "ZOOM_FIT")]
+    encs = [{"cw": cw, "ccw": ccw, "push": push,
+             "app_cw": "", "app_ccw": "", "app_push": "",
+             "arg_cw": "", "arg_ccw": "", "arg_push": ""}
+            for cw, ccw, push in common]
+    # ENC4: 回す=Copilot候補 次/前(Alt+]/Alt+[), 押す=確定(Tab)
+    encs.append({"cw": "HOTKEY", "ccw": "HOTKEY", "push": "HOTKEY",
+                 "app_cw": "", "app_ccw": "", "app_push": "",
+                 "arg_cw": "alt ]", "arg_ccw": "alt [", "arg_push": "tab"})
+    return encs
+
+
 # ===== デフォルト設定 =====
 def default_config() -> dict:
     sw_maps = [
@@ -262,19 +293,24 @@ def default_config() -> dict:
          ("ZOOM_IN","ZOOM_OUT","ZOOM_FIT"),
          ("FONT_UP","FONT_DOWN","DEV_GOTO_DEF")],
     ]
+    switches = [
+        [{"key": k, "app": "", "arg": ""} for k in sw_maps[p]]
+        for p in range(len(PROFILES))
+    ]
+    encoders = [
+        [{"cw": cw, "ccw": ccw, "push": push,
+          "app_cw": "", "app_ccw": "", "app_push": "",
+          "arg_cw": "", "arg_ccw": "", "arg_push": ""}
+         for cw, ccw, push in enc_maps[p]]
+        for p in range(len(PROFILES))
+    ]
+    # AI（Copilot / Claude Code）プロファイルを標準で追加
+    switches.append(_ai_switches())
+    encoders.append(_ai_encoders())
     return {
-        "profiles": PROFILES,
-        "switches": [
-            [{"key": k, "app": "", "arg": ""} for k in sw_maps[p]]
-            for p in range(len(PROFILES))
-        ],
-        "encoders": [
-            [{"cw": cw, "ccw": ccw, "push": push,
-              "app_cw": "", "app_ccw": "", "app_push": "",
-              "arg_cw": "", "arg_ccw": "", "arg_push": ""}
-             for cw, ccw, push in enc_maps[p]]
-            for p in range(len(PROFILES))
-        ],
+        "profiles": list(PROFILES) + ["AI"],
+        "switches": switches,
+        "encoders": encoders,
         "display": {"brightness": 80},
         "auto_profile": {"enabled": False, "rules": dict(DEFAULT_AUTO_RULES)},
         "presets": [],
