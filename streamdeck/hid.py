@@ -32,5 +32,6 @@ class HIDKeyboard:
         pass
 
     def send(self, action: str):
-        # スタブ: シリアル送信はmain.pyのserial_sendが担当
-        print(f"[HID stub] {action}")
+        # スタブ: シリアル送信はmain.pyのserial_sendが担当。
+        # 毎アクションでprintするとUSB CDCを圧迫しループが詰まるため出力しない。
+        pass

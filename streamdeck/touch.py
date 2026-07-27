@@ -27,15 +27,15 @@ _SWIPE_THRESHOLD = 30
 
 
 # CST816 ジェスチャーレジスタ(0x01)の値 → ジェスチャー定数
-# ※実機で確認したコード（ソフト回転済み・横向き画面基準）:
-#   0x01=左→右, 0x02=右→左, 0x03=下→上, 0x04=上→下, 0x05=タップ
-# 横スワイプでページ送りにするため:
-#   右→左(0x02)=SWIPE_LEFT→次ページ / 左→右(0x01)=SWIPE_RIGHT→前ページ
+# ※実機で確認したICのコード: 0x01/0x02=横スワイプ, 0x03/0x04=縦スワイプ, 0x05=タップ
+# LCDを180°逆向きに取り付け＋描画も180°補正しているため、タッチも180°回転している。
+# よって左右・上下を反転させて画面の見た目と一致させる。
+# （display.py の LCD*_FLIP180 を False に戻す場合は、ここも元の対応に戻すこと）
 _GESTURE_MAP = {
-    0x01: GESTURE_SWIPE_RIGHT,
-    0x02: GESTURE_SWIPE_LEFT,
-    0x03: GESTURE_SWIPE_UP,
-    0x04: GESTURE_SWIPE_DOWN,
+    0x01: GESTURE_SWIPE_LEFT,
+    0x02: GESTURE_SWIPE_RIGHT,
+    0x03: GESTURE_SWIPE_DOWN,
+    0x04: GESTURE_SWIPE_UP,
     0x05: GESTURE_TAP,
 }
 

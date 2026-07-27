@@ -38,6 +38,11 @@ _PW = 170
 _PH = 320
 _PANEL_OFFSET = 35   # ST7789V2: (240-170)/2
 
+# LCDを180°逆向きに取り付けた場合、描画を180°回転して補正する。
+# 画面が上下逆に見える時は True。画面ごとに個別設定できる。
+LCD0_FLIP180 = True   # LCD① (CS=GP17)
+LCD1_FLIP180 = True   # LCD② (CS=GP16)
+
 # ST7789V2 コマンド
 _SWRESET = 0x01
 _SLPOUT  = 0x11
@@ -59,8 +64,10 @@ class LCD:
     内部の framebuffer は物理縦向き170x320 で保持する。
     描画メソッドは論理座標→物理座標へ変換して縦バッファに直接描く。
     """
-    def __init__(self, spi, cs_pin, bl_pin, phys_buf, phys_fb, tx_buf, do_reset=True):
+    def __init__(self, spi, cs_pin, bl_pin, phys_buf, phys_fb, tx_buf, do_reset=True,
+                 flip180=False):
         self._spi = spi
+        self._flip180 = flip180
         self._cs  = Pin(cs_pin, Pin.OUT, value=1)
         self._dc  = Pin(_DC,  Pin.OUT)
         self._rst = Pin(_RST, Pin.OUT)
@@ -115,8 +122,10 @@ class LCD:
     # 論理(lx,ly) 横向き320x170 → 物理(px,py) 縦向き170x320
     #   px = ly
     #   py = (W-1) - lx
-    @staticmethod
-    def _map(lx, ly):
+    def _map(self, lx, ly):
+        if self._flip180:
+            # 180°回転（点対称）：LCDを上下逆に取り付けた場合の補正
+            return (_PW - 1) - ly, lx
         return ly, (W - 1) - lx
 
     # ---------- 描画API（論理座標で受ける）----------
@@ -213,15 +222,19 @@ class LCD:
 
 class DisplayManager:
     def __init__(self):
-        spi = SPI(0, baudrate=8_000_000, sck=Pin(_SCK), mosi=Pin(_MOSI))
+        # SPIは高速化で描画レスポンス改善（8MHz→40MHz）。PCBのGNDベタ前提。
+        # 表示に乱れ（ノイズ/化け）が出る場合は 32_000_000 / 24_000_000 へ下げる。
+        spi = SPI(0, baudrate=40_000_000, sck=Pin(_SCK), mosi=Pin(_MOSI))
         # 物理縦バッファを1枚だけ確保して2画面で共有
         self._buf = bytearray(_PW * _PH * 2)
         self._fb  = framebuf.FrameBuffer(self._buf, _PW, _PH, framebuf.RGB565)
         # 転送用バッファ（スワップ済みコピー先）も1枚確保して共有
         self._txbuf = bytearray(_PW * _PH * 2)
         # lcd0でハードリセット(1回)、lcd1はリセットせずレジスタ設定のみ。
-        self.lcd0 = LCD(spi, _CS0, _BL0, self._buf, self._fb, self._txbuf, do_reset=True)
-        self.lcd1 = LCD(spi, _CS1, _BL1, self._buf, self._fb, self._txbuf, do_reset=False)
+        self.lcd0 = LCD(spi, _CS0, _BL0, self._buf, self._fb, self._txbuf,
+                        do_reset=True,  flip180=LCD0_FLIP180)
+        self.lcd1 = LCD(spi, _CS1, _BL1, self._buf, self._fb, self._txbuf,
+                        do_reset=False, flip180=LCD1_FLIP180)
         # lcd1の初期化がlcd0の設定に干渉するため、
         # 両画面初期化後にlcd0のレジスタを流し直して確定させる。
         time.sleep_ms(20)
