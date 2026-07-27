@@ -216,6 +216,52 @@ def expand_maps(cfg: dict):
     return profiles, switch_map, encoder_map
 
 
+# ===== プロファイルのインポート/エクスポート（1プロファイル＝1JSON）=====
+PROFILE_FILE_FORMAT = "streamdeck-profile"
+PROFILE_FILE_VERSION = 1
+
+
+def profile_to_export(cfg: dict, pi: int) -> dict:
+    """指定プロファイルを単体JSON（辞書）形式に変換する。"""
+    import copy
+    return {
+        "format": PROFILE_FILE_FORMAT,
+        "version": PROFILE_FILE_VERSION,
+        "name": cfg["profiles"][pi],
+        "switches": copy.deepcopy(cfg["switches"][pi]),
+        "encoders": copy.deepcopy(cfg["encoders"][pi]),
+    }
+
+
+def profile_from_import(data: dict):
+    """インポートJSONを検証・正規化し (name, switches, encoders) を返す。
+    switches/encoders が揃っていれば format 不問。不正なら ValueError。"""
+    if not isinstance(data, dict):
+        raise ValueError("JSONオブジェクトではありません")
+    switches = data.get("switches")
+    encoders = data.get("encoders")
+    if not isinstance(switches, list) or len(switches) != SW_COUNT:
+        raise ValueError("switches は %d 個必要です" % SW_COUNT)
+    if not isinstance(encoders, list) or len(encoders) != ENC_COUNT:
+        raise ValueError("encoders は %d 個必要です" % ENC_COUNT)
+    if not all(isinstance(s, dict) for s in switches) \
+            or not all(isinstance(e, dict) for e in encoders):
+        raise ValueError("switches/encoders の要素が不正です")
+    name = str(data.get("name") or "インポート")
+    sw = [{"key": s.get("key", "（なし）"),
+           "app": s.get("app", ""), "arg": s.get("arg", "")}
+          for s in switches]
+    enc = []
+    for e in encoders:
+        d = {}
+        for dk in ("cw", "ccw", "push"):
+            d[dk] = e.get(dk, "（なし）")
+            d["app_%s" % dk] = e.get("app_%s" % dk, "")
+            d["arg_%s" % dk] = e.get("arg_%s" % dk, "")
+        enc.append(d)
+    return name, sw, enc
+
+
 # ===== 前面アプリ → プロファイル 自動切替 デフォルトルール =====
 # キー: プロセス実行ファイル名（小文字）  値: プロファイル名（PROFILESと一致）
 DEFAULT_AUTO_RULES = {
@@ -980,6 +1026,57 @@ class EditorFrame(ctk.CTkFrame):
             self._pi = len(profs) - 1
         return True
 
+    def _export_profile(self, pi):
+        """指定プロファイルをJSONファイルへ書き出す。"""
+        name = self.cfg["profiles"][pi]
+        path = filedialog.asksaveasfilename(
+            title="プロファイルをエクスポート", defaultextension=".json",
+            initialfile="%s.json" % name,
+            filetypes=[("プロファイル(JSON)", "*.json"), ("全ファイル", "*.*")])
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(profile_to_export(self.cfg, pi), f,
+                          ensure_ascii=False, indent=2)
+            messagebox.showinfo("エクスポート",
+                                "「%s」を書き出しました。\n%s" % (name, path))
+        except Exception as e:
+            messagebox.showerror("エクスポート", str(e))
+
+    def _import_profile(self):
+        """JSONファイルからプロファイルを読み込み、新規プロファイルとして追加する。
+        成功したら追加後の名前を返す（失敗/中止は None）。"""
+        path = filedialog.askopenfilename(
+            title="プロファイルをインポート",
+            filetypes=[("プロファイル(JSON)", "*.json"), ("全ファイル", "*.*")])
+        if not path:
+            return None
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            name, sw, enc = profile_from_import(data)
+        except Exception as e:
+            messagebox.showerror("インポート", "読み込みに失敗しました:\n%s" % e)
+            return None
+        profs = self.cfg["profiles"]
+        if len(profs) >= MAX_PROFILES:
+            messagebox.showwarning("プロファイル", "最大 %d 個までです。" % MAX_PROFILES)
+            return None
+        # 名前重複を回避
+        base, n = name, 2
+        while name in profs:
+            name = "%s_%d" % (base, n)
+            n += 1
+        profs.append(name)
+        self.cfg["switches"].append(sw)
+        self.cfg["encoders"].append(enc)
+        self._pi = len(profs) - 1        # 追加したプロファイルを表示
+        self._refresh_profile_menu()
+        self._select(("sw", 0))
+        messagebox.showinfo("インポート", "「%s」を追加しました。" % name)
+        return name
+
     def _manage_profiles(self):
         win = ctk.CTkToplevel(self)
         win.title("プロファイル管理")
@@ -1022,7 +1119,10 @@ class EditorFrame(ctk.CTkFrame):
                 ent.bind("<FocusOut>", lambda e, idx=i, v=var: commit_rename(idx, v))
                 ctk.CTkButton(rowf, text="削除", width=48, fg_color="#b91c1c",
                               hover_color="#991b1b",
-                              command=lambda idx=i: _do_delete(idx)).pack(side="right", padx=6)
+                              command=lambda idx=i: _do_delete(idx)).pack(side="right", padx=(2, 6))
+                ctk.CTkButton(rowf, text="書出", width=44, fg_color="#555",
+                              hover_color="#666",
+                              command=lambda idx=i: self._export_profile(idx)).pack(side="right", padx=2)
             info.configure(text=f"{len(profs)} / {MAX_PROFILES} プロファイル")
 
         def _do_delete(idx):
@@ -1036,10 +1136,16 @@ class EditorFrame(ctk.CTkFrame):
                 render()
                 self._refresh_profile_menu()
 
+        def _do_import():
+            if self._import_profile():
+                render()
+
         info = ctk.CTkLabel(bottom, text="", text_color="#888")
         info.pack(side="left")
         ctk.CTkButton(bottom, text="＋ プロファイル追加", fg_color="#16a34a",
                       hover_color="#15803d", command=_do_add).pack(side="right")
+        ctk.CTkButton(bottom, text="インポート", fg_color="#2563eb",
+                      hover_color="#1d4ed8", command=_do_import).pack(side="right", padx=6)
 
         render()
         win.after(60, lambda: (win.grab_set(), win.focus_force()))
