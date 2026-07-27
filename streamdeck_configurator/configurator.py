@@ -68,8 +68,8 @@ _ARG_PREFIX = {"URL_OPEN": "URL", "CMD_RUN": "CMD", "TEXT_INPUT": "TEXT"}
 # プリセット最大数
 MAX_PRESETS = 32
 
-# プロファイル最大数（タップ/SW1での順送りが実用的な範囲。必要なら増やせる）
-MAX_PROFILES = 8
+# プロファイル最大数（タップ/SW1での順送り。多いと巡回は増えるが自由に増やせる）
+MAX_PROFILES = 16
 
 # ファイル選択で許可する拡張子（アプリ / ショートカット）
 APP_FILETYPES = [
