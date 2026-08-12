@@ -183,13 +183,20 @@ class AgentThread:
             pf = msg.get("profile", "")
             action = msg.get("action", "")
             if sw is not None:
-                self._log(f"SW{sw+1} [{pf}] {action}")
-                if action and AGENT_OK:
-                    ag.send_key(action)
+                label = f"SW{sw+1}"
             elif enc is not None:
-                self._log(f"ENC{enc+1} {d} [{pf}] {action}")
+                label = f"ENC{enc+1} {d}"
+            else:
+                label = None
+            if label is not None:
                 if action and AGENT_OK:
+                    # PC側のキー送信にかかった時間を計測してログに出す（重さの切り分け用）
+                    t0 = time.perf_counter()
                     ag.send_key(action)
+                    dt = (time.perf_counter() - t0) * 1000.0
+                    self._log(f"{label} [{pf}] {action}  (PC送信 {dt:.0f}ms)")
+                else:
+                    self._log(f"{label} [{pf}] {action}")
 
     # ---- 情報送信 ----
     def _get_weather_cached(self) -> dict:
