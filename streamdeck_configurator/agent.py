@@ -195,6 +195,15 @@ def get_weather() -> dict:
         return {"condition": "unknown", "temp": "--", "humidity": "--", "desc": "取得失敗"}
 
 
+# ===== 日付/時刻（LCD表示用・PCのローカル時刻）=====
+def current_datetime_str() -> str:
+    """LCD表示用の日付時刻文字列。曜日は漢字（Picoの日本語フォントで表示）。"""
+    lt = time.localtime()
+    wd = "月火水木金土日"[lt.tm_wday]   # tm_wday: 月=0 .. 日=6
+    return "%02d/%02d(%s) %02d:%02d" % (lt.tm_mon, lt.tm_mday, wd,
+                                        lt.tm_hour, lt.tm_min)
+
+
 # ===== Pico ポート自動検出 =====
 def find_pico_port() -> str | None:
     """
@@ -352,6 +361,7 @@ class StreamDeckAgent:
                 "mic_volume": get_mic_volume(),
                 "apps":       get_running_apps(),
                 "weather":    self._get_weather_cached(),
+                "datetime":   current_datetime_str(),
             }
             self._send(payload)
             time.sleep(SEND_INTERVAL)

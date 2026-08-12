@@ -55,6 +55,8 @@ class State:
     apps:           list = []
     # 天気（PCから取得）
     weather:        dict = {}
+    # 日付/時刻（PCから取得・LCD表示用）
+    datetime:       str  = ""
     # LCD独立ページ
     page0:          int  = 0    # LCD① 現在ページ
     page1:          int  = 0    # LCD② 現在ページ
@@ -209,6 +211,7 @@ while True:
             state.mic_volume = msg.get("mic_volume", -1)
             state.apps       = msg.get("apps",       [])
             state.weather    = msg.get("weather",    {})
+            state.datetime   = msg.get("datetime",   "")
             # info は 音量/天気(p0)・アプリ(p1) にしか出ないので、その画面が
             # 該当ページを表示している時だけ再描画する（2秒毎のもたつき抑制）。
             # p2=プロファイル / p3=SWマップ / p4=ENCマップ は info で変わらない。

@@ -46,6 +46,20 @@ LCD1_FLIP180 = True   # LCD② (CS=GP16)
 # show() の内訳（回転 vs SPI転送）を計測してログ出力（計測時のみ True に）
 _SHOW_PERF = False
 
+# 日本語ビットマップフォント（jpfont.py があれば読み込む。無ければASCIIのみ）
+try:
+    import jpfont
+    _JPFONT = jpfont.FONT
+except Exception:
+    _JPFONT = {}
+# 日本語グリフ(MONO)を色付きblitするための2色パレット（描画時にindex1へ色をセット）。
+# 透明キーは番兵色 0x0001（ほぼ黒・実描画しない）にする。こうすると前景に黒
+# (0x0000) を指定しても keyと一致せず描画できる（バッジの黒文字対策）。
+# ※blitのkeyはパレット適用「後」の色と比較される（MicroPython仕様）。
+_JP_KEY = 0x0001
+_jp_pal = framebuf.FrameBuffer(bytearray(4), 2, 1, framebuf.RGB565)
+_jp_pal.pixel(0, 0, _JP_KEY)   # index0=背景=透明キー番兵
+
 # ST7789V2 コマンド
 _SWRESET = 0x01
 _SLPOUT  = 0x11
@@ -130,6 +144,25 @@ class LCD:
     def small_text(self, s, x, y, color):
         # 8pxフォントはネイティブ描画（回転はshow時にまとめて行う）
         self._fb.text(s, x, y, color)
+
+    def text_jp(self, s, x, y, color):
+        """ASCIIと日本語(16x16)の混在文字列を16px等幅で描く。
+        ASCIIは scale=2 の内蔵フォント、日本語は jpfont のグリフを blit。
+        未収録の日本語文字は '?' で表示。"""
+        cx = x
+        for ch in s:
+            if ord(ch) < 128:
+                self.text(ch, cx, y, color, scale=2)
+            else:
+                g = _JPFONT.get(ch)
+                if g:
+                    gfb = framebuf.FrameBuffer(bytearray(g), 16, 16,
+                                               framebuf.MONO_HLSB)
+                    _jp_pal.pixel(1, 0, color)   # 前景色（黒も可）
+                    self._fb.blit(gfb, cx, y, _JP_KEY, _jp_pal)  # 背景のみ透過
+                else:
+                    self.text("?", cx, y, color, scale=2)
+            cx += 16
 
     def text(self, s, x, y, color, scale=2):
         """論理座標(x,y)に文字。scale=1はネイティブ、scale>=2は8pxグリフを

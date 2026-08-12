@@ -226,8 +226,9 @@ class AgentThread:
             mic = ag.get_mic_volume()
             apps = ag.get_running_apps()
             wx = self._get_weather_cached()
+            dt = ag.current_datetime_str() if AGENT_OK else ""
             self._send({"type": "info", "volume": vol, "mic_volume": mic,
-                        "apps": apps, "weather": wx})
+                        "apps": apps, "weather": wx, "datetime": dt})
             self._status(volume=vol, mic_volume=mic,
                          weather=wx.get("desc", "—"), temp=wx.get("temp", "—"))
             time.sleep(interval)
