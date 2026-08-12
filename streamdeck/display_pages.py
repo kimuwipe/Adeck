@@ -238,6 +238,7 @@ def draw_page2(lcd: LCD, page: int, state) -> None:
 
 # ===== ページ3: スイッチ割り当て =====
 def draw_page3(lcd: LCD, page: int, state) -> None:
+    import config as _cfg
     from config import SWITCH_MAP, PROFILES
     lcd.fill(BLACK)
     pi   = state.profile
@@ -245,6 +246,9 @@ def draw_page3(lcd: LCD, page: int, state) -> None:
     _header(lcd, "SWITCH MAP", pcol)   # プロファイル名は右上バッジで表示
 
     sws    = SWITCH_MAP[pi]
+    # スイッチのプリセット名（設定アプリで付与。無ければアクション文字列を表示）
+    labels = getattr(_cfg, "SWITCH_LABELS", None)
+    plabels = labels[pi] if (labels and pi < len(labels)) else None
     # 4行×2列グリッド
     cw     = (W - PAD * 3) // 2   # セル幅
     cell_h = (DOT_Y - HDR_H - 2) // 4
@@ -261,15 +265,19 @@ def draw_page3(lcd: LCD, page: int, state) -> None:
         # SW番号（small_text）
         lcd.small_text(f"SW{i+1}", cx + 2, cy + 2, DKGRAY)
 
-        # アクション（scale=2、長い場合は短縮）
-        action = sws[i]
-        if action is None:
-            label = "--"
-        elif action == "PROFILE_NEXT":
-            label = "PROF.NXT"
+        # プリセット名があれば日本語対応で表示、無ければ従来のアクション文字列
+        lab = plabels[i] if (plabels and i < len(plabels)) else None
+        if lab:
+            lcd.text_jp(str(lab)[:8], cx + 2, cy + 12, WHITE)
         else:
-            label = action[:8]
-        lcd.text(label, cx + 2, cy + 12, WHITE)
+            action = sws[i]
+            if action is None:
+                label = "--"
+            elif action == "PROFILE_NEXT":
+                label = "PROF.NXT"
+            else:
+                label = action[:8]
+            lcd.text(label, cx + 2, cy + 12, WHITE)
 
     _dots(lcd, page)
 

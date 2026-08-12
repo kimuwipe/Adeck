@@ -144,12 +144,16 @@ def apply_live_config(msg):
     pf = msg.get("profiles")
     sm = msg.get("switches")
     em = msg.get("encoders")
+    sl = msg.get("switch_labels")
     if isinstance(pf, list) and pf:
         PROFILES = pf; _config.PROFILES = pf
     if isinstance(sm, list) and sm:
         SWITCH_MAP = sm; _config.SWITCH_MAP = sm
     if isinstance(em, list) and em:
         ENCODER_MAP = em; _config.ENCODER_MAP = em
+    if isinstance(sl, list):
+        # スイッチのプリセット名（LCDのSWマップ表示用）。display_pagesがconfig参照。
+        _config.SWITCH_LABELS = sl
     if state.profile >= len(PROFILES):
         state.profile = 0
     state.dirty0 = True

@@ -241,12 +241,12 @@ class AgentThread:
         if not CFG_OK:
             return False
         try:
-            profiles, sm, em = cfgmod.expand_maps(cfg)
+            profiles, sm, em, sl = cfgmod.expand_maps(cfg)
         except Exception as e:
             self._log(f"設定展開エラー: {e}")
             return False
         self._send({"type": "config", "profiles": profiles,
-                    "switches": sm, "encoders": em})
+                    "switches": sm, "encoders": em, "switch_labels": sl})
         self._log("ライブ設定を送信しました（書込なし即反映）")
         self._load_auto_profile()   # ルール等も最新化
         return True
