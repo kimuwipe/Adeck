@@ -197,6 +197,7 @@ def enc_ok(idx):
 
 # ===== メインループ =====
 _draw_cnt = 0
+_PERF_DEBUG = False  # 描画/転送の所要時間をログ出力（計測時のみ True に）
 
 while True:
     # ── PC からシリアル受信
@@ -208,8 +209,13 @@ while True:
             state.mic_volume = msg.get("mic_volume", -1)
             state.apps       = msg.get("apps",       [])
             state.weather    = msg.get("weather",    {})
-            state.dirty0     = True
-            state.dirty1     = True
+            # info は 音量/天気(p0)・アプリ(p1) にしか出ないので、その画面が
+            # 該当ページを表示している時だけ再描画する（2秒毎のもたつき抑制）。
+            # p2=プロファイル / p3=SWマップ / p4=ENCマップ は info で変わらない。
+            if state.page0 <= 1:
+                state.dirty0 = True
+            if state.page1 <= 1:
+                state.dirty1 = True
         elif t == "set_profile":
             set_profile_by(msg.get("profile"), msg.get("index"))
         elif t == "config":
@@ -279,13 +285,33 @@ while True:
     force = _draw_cnt >= 200      # 保険の全画面リフレッシュ（頻度は低く）
 
     if state.dirty0 or force:
-        draw_page(disp.lcd0, state.page0, state)
-        disp.lcd0.show()
+        if _PERF_DEBUG:
+            _t0 = time.ticks_us()
+            draw_page(disp.lcd0, state.page0, state)
+            _t1 = time.ticks_us()
+            disp.lcd0.show()
+            _t2 = time.ticks_us()
+            print("[PERF] LCD0 p%d 描画=%.1fms 転送=%.1fms" % (
+                state.page0, time.ticks_diff(_t1, _t0) / 1000,
+                time.ticks_diff(_t2, _t1) / 1000))
+        else:
+            draw_page(disp.lcd0, state.page0, state)
+            disp.lcd0.show()
         state.dirty0 = False
 
     if state.dirty1 or force:
-        draw_page(disp.lcd1, state.page1, state)
-        disp.lcd1.show()
+        if _PERF_DEBUG:
+            _t0 = time.ticks_us()
+            draw_page(disp.lcd1, state.page1, state)
+            _t1 = time.ticks_us()
+            disp.lcd1.show()
+            _t2 = time.ticks_us()
+            print("[PERF] LCD1 p%d 描画=%.1fms 転送=%.1fms" % (
+                state.page1, time.ticks_diff(_t1, _t0) / 1000,
+                time.ticks_diff(_t2, _t1) / 1000))
+        else:
+            draw_page(disp.lcd1, state.page1, state)
+            disp.lcd1.show()
         state.dirty1 = False
 
     if force:
