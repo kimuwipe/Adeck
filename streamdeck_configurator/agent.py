@@ -8,6 +8,17 @@
 
 from __future__ import annotations   # 古いPythonでも list[str] 等の型注釈を許可
 
+import sys
+# COMは MTA（マルチスレッドアパートメント）で初期化する。comtypes は import 前の
+# sys.coinit_flags を見てアパートメントを決めるため、pycaw/comtypes の import より
+# 前に 0(=COINIT_MULTITHREADED) を設定する。
+# 【重要】pycaw のCOMオブジェクトは循環参照を持ち、参照カウントではなく循環GCで
+# 回収される。循環GCはどのスレッドでも走り得るため、STAだとワーカースレッドで
+# 生成したオブジェクトがメインスレッドのGCで Release されてアクセス違反で落ちる
+# （tkinter mainloop 中のGCで発生）。MTA は単一アパートメントなので、どのスレッドで
+# Release しても安全になり、このクラッシュを根絶できる。
+sys.coinit_flags = 0   # 0 = COINIT_MULTITHREADED
+
 import serial
 import serial.tools.list_ports
 import json
@@ -30,16 +41,19 @@ except ImportError:
 
 
 def co_initialize():
-    """呼び出しスレッドで COM を初期化する。
-    pycaw(COM) をバックグラウンドスレッドから使うには各スレッドで
-    CoInitialize が必要（未初期化だと音量取得が失敗し -1 になる）。"""
+    """呼び出しスレッドで COM を MTA で初期化する。
+    pycaw(COM) を各スレッドから使うには初期化が必要（未初期化だと音量取得が
+    -1 になる）。MTA にすることで、GCがメインスレッドでCOMオブジェクトを
+    Release してもクラッシュしない（sys.coinit_flags の説明参照）。
+    ※ワーカースレッドだけでなくメインスレッドでも起動時に呼ぶこと
+    （GCの終了処理がメインスレッドで走るため）。"""
     if not PYCAW_OK:
         return
     try:
         import comtypes
-        comtypes.CoInitialize()
+        comtypes.CoInitializeEx(comtypes.COINIT_MULTITHREADED)
     except Exception as e:
-        print(f"[COM] CoInitialize 失敗: {e}")
+        print(f"[COM] CoInitializeEx 失敗: {e}")
 
 SEND_INTERVAL   = 2.0   # 秒ごとに Pico へ情報送信
 APP_DISPLAY_MAX = 8     # LCD に表示するアプリ数
@@ -193,6 +207,15 @@ def get_weather() -> dict:
     except Exception as e:
         print(f"[WEATHER ERROR] {e}")
         return {"condition": "unknown", "temp": "--", "humidity": "--", "desc": "取得失敗"}
+
+
+# ===== 日付/時刻（LCD表示用・PCのローカル時刻）=====
+def current_datetime_str() -> str:
+    """LCD表示用の日付時刻文字列。曜日は漢字（Picoの日本語フォントで表示）。"""
+    lt = time.localtime()
+    wd = "月火水木金土日"[lt.tm_wday]   # tm_wday: 月=0 .. 日=6
+    return "%02d/%02d(%s) %02d:%02d" % (lt.tm_mon, lt.tm_mday, wd,
+                                        lt.tm_hour, lt.tm_min)
 
 
 # ===== Pico ポート自動検出 =====
@@ -352,6 +375,7 @@ class StreamDeckAgent:
                 "mic_volume": get_mic_volume(),
                 "apps":       get_running_apps(),
                 "weather":    self._get_weather_cached(),
+                "datetime":   current_datetime_str(),
             }
             self._send(payload)
             time.sleep(SEND_INTERVAL)

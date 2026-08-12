@@ -193,14 +193,20 @@ def action_literal(key: str, app: str, arg: str) -> str:
 
 
 def expand_maps(cfg: dict):
-    """cfg から Pico ランタイム形式の (profiles, switch_map, encoder_map) を
-    生成する。config_to_py と同じ展開ロジック（ENC1〜3共通・ENC4別）。
-    ライブ反映のシリアル送信用に JSON 可能な素のリストを返す。"""
+    """cfg から Pico ランタイム形式の
+    (profiles, switch_map, encoder_map, switch_labels) を生成する。
+    config_to_py と同じ展開ロジック（ENC1〜3共通・ENC4別）。
+    switch_labels は各スイッチのプリセット名（無ければNone）で、LCDのSWマップ
+    表示に使う。ライブ反映のシリアル送信用に JSON 可能な素のリストを返す。"""
     profiles = cfg.get("profiles", PROFILES)
     n = len(profiles)
     switch_map = [
         [action_value(sw.get("key", "（なし）"), sw.get("app", ""), sw.get("arg", ""))
          for sw in cfg["switches"][p]]
+        for p in range(n)
+    ]
+    switch_labels = [
+        [(sw.get("label") or None) for sw in cfg["switches"][p]]
         for p in range(n)
     ]
 
@@ -213,7 +219,7 @@ def expand_maps(cfg: dict):
 
     common = [_triple(cfg["encoders"][0][i]) for i in range(3)]
     encoder_map = [common + [_triple(cfg["encoders"][p][3])] for p in range(n)]
-    return profiles, switch_map, encoder_map
+    return profiles, switch_map, encoder_map, switch_labels
 
 
 # ===== 前面アプリ → プロファイル 自動切替 デフォルトルール =====
@@ -341,6 +347,19 @@ def config_to_py(cfg: dict) -> str:
             val = action_literal(sw.get("key", "（なし）"),
                                  sw.get("app", ""), sw.get("arg", ""))
             lines.append(f"        {val},")
+        lines.append("    ],")
+    lines.append("]")
+    lines.append("")
+
+    # スイッチのプリセット名（LCDのSWマップ表示用。無ければ None）
+    lines.append("SWITCH_LABELS = [")
+    for p_sws in cfg["switches"]:
+        lines.append("    [")
+        for sw in p_sws:
+            lab = sw.get("label") or None
+            # None は Python リテラルで（json.dumps は null を出すため不可）
+            lit = "None" if lab is None else json.dumps(lab, ensure_ascii=False)
+            lines.append(f"        {lit},")
         lines.append("    ],")
     lines.append("]")
     lines.append("")
@@ -473,6 +492,25 @@ class EditorFrame(ctk.CTkFrame):
             ei = slot[2]
             for p in range(len(self.cfg["profiles"])):
                 self.cfg["encoders"][p][ei][field] = value
+
+    # ---------- 表示ラベル（プリセット名） ----------
+    def _label_field(self, slot):
+        """slot に対応する表示ラベルのフィールド名（sw=label / enc=label_<方向>）。"""
+        return "label" if slot[0] == "sw" else f"label_{slot[3]}"
+
+    def _set_label(self, slot, name):
+        """スロットへ表示ラベルを設定（プリセット割り当て時）。ENC共通も反映。"""
+        d = self._slot_fields(slot)[0]
+        lf = self._label_field(slot)
+        d[lf] = name or ""
+        self._mirror_enc_common(slot, lf, d[lf])
+
+    def _clear_label(self, slot):
+        """アクションを手動変更したらプリセット由来の表示ラベルを消す。"""
+        d = self._slot_fields(slot)[0]
+        lf = self._label_field(slot)
+        if d.pop(lf, None) not in (None, ""):
+            self._mirror_enc_common(slot, lf, "")
 
     # ---------- UI 構築 ----------
     def _build_ui(self):
@@ -681,6 +719,7 @@ class EditorFrame(ctk.CTkFrame):
         d, kf, af, argf = self._slot_fields(slot)
         d[kf] = value
         self._mirror_enc_common(slot, kf, value)
+        self._clear_label(slot)      # 手動変更＝プリセット名は無効化
         self._active_slot = slot
         self._refresh_grid()
 
@@ -688,6 +727,7 @@ class EditorFrame(ctk.CTkFrame):
         d, kf, af, argf = self._slot_fields(slot)
         d[argf] = text
         self._mirror_enc_common(slot, argf, text)
+        self._clear_label(slot)      # 手動変更＝プリセット名は無効化
         self._active_slot = slot
         self._refresh_grid()
 
@@ -702,6 +742,7 @@ class EditorFrame(ctk.CTkFrame):
         d[kf] = "APP_LAUNCH"
         self._mirror_enc_common(slot, af, path)
         self._mirror_enc_common(slot, kf, "APP_LAUNCH")
+        self._clear_label(slot)      # 手動変更＝プリセット名は無効化
         self._active_slot = slot
         self._build_detail()
         self._refresh_grid()
@@ -712,6 +753,7 @@ class EditorFrame(ctk.CTkFrame):
         d, kf, af, argf = self._slot_fields(self._active_slot)
         d[kf] = key
         self._mirror_enc_common(self._active_slot, kf, key)
+        self._clear_label(self._active_slot)   # 手動変更＝プリセット名は無効化
         self._build_detail()
         self._refresh_grid()
 
@@ -728,6 +770,7 @@ class EditorFrame(ctk.CTkFrame):
         d[argf] = combo
         self._mirror_enc_common(slot, kf, "HOTKEY")
         self._mirror_enc_common(slot, argf, combo)
+        self._clear_label(slot)      # 手動変更＝プリセット名は無効化
         self._active_slot = slot
         self._build_detail()
         self._refresh_grid()
@@ -847,6 +890,8 @@ class EditorFrame(ctk.CTkFrame):
         self._mirror_enc_common(self._active_slot, kf, d[kf])
         self._mirror_enc_common(self._active_slot, af, d[af])
         self._mirror_enc_common(self._active_slot, argf, d[argf])
+        # プリセット名をボタン/LCD の表示ラベルとして保持
+        self._set_label(self._active_slot, preset.get("name", ""))
         self._build_detail()
         self._refresh_grid()
 
@@ -922,7 +967,8 @@ class EditorFrame(ctk.CTkFrame):
         sws = self.cfg["switches"][self._pi]
         for si, btn in enumerate(self._sw_buttons):
             sw = sws[si]
-            lbl = short_label(sw.get("key"), sw.get("app", ""), sw.get("arg", ""))
+            lbl = sw.get("label") or short_label(
+                sw.get("key"), sw.get("app", ""), sw.get("arg", ""))
             selected = (self._sel == ("sw", si))
             btn.configure(text=f"SW{si+1}\n{lbl}",
                           fg_color=(CARD_SEL if selected else CARD_BG),
@@ -931,8 +977,10 @@ class EditorFrame(ctk.CTkFrame):
         encs = self.cfg["encoders"][self._pi]
         for ei, card in enumerate(self._enc_cards):
             enc = encs[ei]
-            cw = short_label(enc.get("cw"), enc.get("app_cw", ""), enc.get("arg_cw", ""))
-            pu = short_label(enc.get("push"), enc.get("app_push", ""), enc.get("arg_push", ""))
+            cw = enc.get("label_cw") or short_label(
+                enc.get("cw"), enc.get("app_cw", ""), enc.get("arg_cw", ""))
+            pu = enc.get("label_push") or short_label(
+                enc.get("push"), enc.get("app_push", ""), enc.get("arg_push", ""))
             selected = (self._sel == ("enc", ei))
             card.configure(text=f"ENC{ei+1}\n↻ {cw}\nP {pu}",
                            fg_color=(CARD_SEL if selected else CARD_BG),
@@ -1106,11 +1154,19 @@ class EditorFrame(ctk.CTkFrame):
         try:
             with open(dst, "w", encoding="utf-8") as f:
                 f.write(py_text)
-            messagebox.showinfo("書き込み完了",
-                f"config.py を {drive} に書き込みました。\n"
-                "Pico を再起動すると設定が反映されます。")
         except Exception as e:
             messagebox.showerror("書き込みエラー", str(e))
+            return
+        # 使用文字だけの日本語フォント jpfont.py も生成して同梱
+        # （プロファイル名・プリセット名など任意の日本語をLCDで確実に表示）
+        try:
+            import fontgen
+            font_msg = fontgen.write_jpfont(self.cfg, drive)
+        except Exception as e:
+            font_msg = f"フォント同梱をスキップ（{e}）。"
+        messagebox.showinfo("書き込み完了",
+            f"config.py を {drive} に書き込みました。\n{font_msg}\n"
+            "Pico を再起動すると設定が反映されます。")
 
 
 # ===== 単体起動用 薄いラッパー（統合UIからは EditorFrame を直接埋め込む）=====

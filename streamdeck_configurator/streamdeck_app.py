@@ -21,6 +21,12 @@ import time
 import threading
 import queue
 
+# COMは MTA で初期化する（comtypes は import 前の sys.coinit_flags を見る）。
+# エントリポイントなので agent/comtypes より前のここで確実に設定しておく。
+# 目的: pycaw のCOMオブジェクトがメインスレッドのGCで Release されても
+# 落ちないようにする（詳細は agent.py の説明を参照）。
+sys.coinit_flags = 0   # 0 = COINIT_MULTITHREADED
+
 import tkinter as tk
 import customtkinter as ctk
 from tkinter import messagebox
@@ -226,8 +232,9 @@ class AgentThread:
             mic = ag.get_mic_volume()
             apps = ag.get_running_apps()
             wx = self._get_weather_cached()
+            dt = ag.current_datetime_str() if AGENT_OK else ""
             self._send({"type": "info", "volume": vol, "mic_volume": mic,
-                        "apps": apps, "weather": wx})
+                        "apps": apps, "weather": wx, "datetime": dt})
             self._status(volume=vol, mic_volume=mic,
                          weather=wx.get("desc", "—"), temp=wx.get("temp", "—"))
             time.sleep(interval)
@@ -240,12 +247,12 @@ class AgentThread:
         if not CFG_OK:
             return False
         try:
-            profiles, sm, em = cfgmod.expand_maps(cfg)
+            profiles, sm, em, sl = cfgmod.expand_maps(cfg)
         except Exception as e:
             self._log(f"設定展開エラー: {e}")
             return False
         self._send({"type": "config", "profiles": profiles,
-                    "switches": sm, "encoders": em})
+                    "switches": sm, "encoders": em, "switch_labels": sl})
         self._log("ライブ設定を送信しました（書込なし即反映）")
         self._load_auto_profile()   # ルール等も最新化
         return True
@@ -678,5 +685,9 @@ if __name__ == "__main__":
         _focus_existing_window()
         _notify_already_running()
         sys.exit(0)
+    # メインスレッドでもCOMをMTA初期化しておく。GCの終了処理(__del__→Release)は
+    # メインスレッド(mainloop)で走ることがあり、未初期化だとアクセス違反で落ちる。
+    if AGENT_OK:
+        ag.co_initialize()
     app = StreamDeckApp()
     app.mainloop()

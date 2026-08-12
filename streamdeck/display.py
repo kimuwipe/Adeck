@@ -43,6 +43,23 @@ _PANEL_OFFSET = 35   # ST7789V2: (240-170)/2
 LCD0_FLIP180 = True   # LCD① (CS=GP17)
 LCD1_FLIP180 = True   # LCD② (CS=GP16)
 
+# show() の内訳（回転 vs SPI転送）を計測してログ出力（計測時のみ True に）
+_SHOW_PERF = False
+
+# 日本語ビットマップフォント（jpfont.py があれば読み込む。無ければASCIIのみ）
+try:
+    import jpfont
+    _JPFONT = jpfont.FONT
+except Exception:
+    _JPFONT = {}
+# 日本語グリフ(MONO)を色付きblitするための2色パレット（描画時にindex1へ色をセット）。
+# 透明キーは番兵色 0x0001（ほぼ黒・実描画しない）にする。こうすると前景に黒
+# (0x0000) を指定しても keyと一致せず描画できる（バッジの黒文字対策）。
+# ※blitのkeyはパレット適用「後」の色と比較される（MicroPython仕様）。
+_JP_KEY = 0x0001
+_jp_pal = framebuf.FrameBuffer(bytearray(4), 2, 1, framebuf.RGB565)
+_jp_pal.pixel(0, 0, _JP_KEY)   # index0=背景=透明キー番兵
+
 # ST7789V2 コマンド
 _SWRESET = 0x01
 _SLPOUT  = 0x11
@@ -64,7 +81,7 @@ class LCD:
     内部の framebuffer は物理縦向き170x320 で保持する。
     描画メソッドは論理座標→物理座標へ変換して縦バッファに直接描く。
     """
-    def __init__(self, spi, cs_pin, bl_pin, phys_buf, phys_fb, tx_buf, do_reset=True,
+    def __init__(self, spi, cs_pin, bl_pin, log_buf, log_fb, tx_buf, do_reset=True,
                  flip180=False):
         self._spi = spi
         self._flip180 = flip180
@@ -74,10 +91,12 @@ class LCD:
         self._bl  = PWM(Pin(bl_pin))
         self._bl.freq(1000)
         self.set_brightness(80)
-        # 物理縦向きフレームバッファ（2画面で共有）
-        self._buf = phys_buf
-        self._fb  = phys_fb
-        self._txbuf = tx_buf   # 転送用バッファ（スワップ済みコピー先・共有）
+        # 論理(横向き320x170)フレームバッファ（2画面で共有）に直接描画し、
+        # show() で物理(縦170x320)へ回転＋バイトスワップして転送する。
+        # これで文字描画のピクセル単位ソフト回転(遅い)が不要になり高速化。
+        self._lbuf  = log_buf
+        self._fb    = log_fb
+        self._txbuf = tx_buf   # 物理転送バッファ（回転+スワップ結果・共有）
         # RSTは全画面共有なので、最初の1枚だけハードリセットを行う。
         # レジスタ設定は各画面のCSを選択して個別に流す。
         if do_reset:
@@ -118,80 +137,68 @@ class LCD:
         duty = int(65535 * (100 - pct) / 100)
         self._bl.duty_u16(duty)
 
-    # ---------- 論理→物理 座標変換 ----------
-    # 論理(lx,ly) 横向き320x170 → 物理(px,py) 縦向き170x320
-    #   px = ly
-    #   py = (W-1) - lx
-    def _map(self, lx, ly):
-        if self._flip180:
-            # 180°回転（点対称）：LCDを上下逆に取り付けた場合の補正
-            return (_PW - 1) - ly, lx
-        return ly, (W - 1) - lx
-
-    # ---------- 描画API（論理座標で受ける）----------
+    # ---------- 描画API（論理座標で framebuf に直接描く＝ネイティブ・高速）----------
     def fill(self, color):
         self._fb.fill(color)
 
-    def text(self, s, x, y, color, scale=2):
-        """論理座標(x,y)に文字。物理バッファへ回転して描く。"""
-        # 8x8フォントを一時バッファに描き、ピクセルを回転転写
-        n = len(s)
-        tw = 8 * n
-        tmp = bytearray(tw * 8 * 2)
-        tfb = framebuf.FrameBuffer(tmp, tw, 8, framebuf.RGB565)
-        tfb.fill(0x0000)
-        tfb.text(s, 0, 0, color)
-        for cy in range(8):
-            for cx in range(tw):
-                if tfb.pixel(cx, cy):
-                    # 論理座標
-                    lx = x + cx * scale
-                    ly = y + cy * scale
-                    for dx in range(scale):
-                        for dy in range(scale):
-                            px, py = self._map(lx + dx, ly + dy)
-                            if 0 <= px < _PW and 0 <= py < _PH:
-                                self._fb.pixel(px, py, color)
-
     def small_text(self, s, x, y, color):
+        # 8pxフォントはネイティブ描画（回転はshow時にまとめて行う）
+        self._fb.text(s, x, y, color)
+
+    def text_jp(self, s, x, y, color):
+        """ASCIIと日本語(16x16)の混在文字列を16px等幅で描く。
+        ASCIIは scale=2 の内蔵フォント、日本語は jpfont のグリフを blit。
+        未収録の日本語文字は '?' で表示。"""
+        cx = x
+        for ch in s:
+            if ord(ch) < 128:
+                self.text(ch, cx, y, color, scale=2)
+            else:
+                g = _JPFONT.get(ch)
+                if g:
+                    gfb = framebuf.FrameBuffer(bytearray(g), 16, 16,
+                                               framebuf.MONO_HLSB)
+                    _jp_pal.pixel(1, 0, color)   # 前景色（黒も可）
+                    self._fb.blit(gfb, cx, y, _JP_KEY, _jp_pal)  # 背景のみ透過
+                else:
+                    self.text("?", cx, y, color, scale=2)
+            cx += 16
+
+    def text(self, s, x, y, color, scale=2):
+        """論理座標(x,y)に文字。scale=1はネイティブ、scale>=2は8pxグリフを
+        fill_rectで拡大（ピクセル単位の座標変換が無いので従来より大幅に高速）。"""
+        if scale == 1:
+            self._fb.text(s, x, y, color)
+            return
         n = len(s)
         tw = 8 * n
         tmp = bytearray(tw * 8 * 2)
         tfb = framebuf.FrameBuffer(tmp, tw, 8, framebuf.RGB565)
         tfb.fill(0x0000)
         tfb.text(s, 0, 0, color)
+        fb = self._fb
         for cy in range(8):
+            yy = y + cy * scale
             for cx in range(tw):
                 if tfb.pixel(cx, cy):
-                    px, py = self._map(x + cx, y + cy)
-                    if 0 <= px < _PW and 0 <= py < _PH:
-                        self._fb.pixel(px, py, color)
+                    fb.fill_rect(x + cx * scale, yy, scale, scale, color)
 
     def rect(self, x, y, w, h, color, fill=False):
         if fill:
-            # 論理矩形 → 物理では回転した矩形。1pxずつ変換すると遅いので
-            # 物理座標系での矩形範囲を計算して fill_rect する
-            # 論理(x,y)-(x+w,y+h) の4隅を変換
-            px0, py0 = self._map(x, y)
-            px1, py1 = self._map(x + w - 1, y + h - 1)
-            rx = min(px0, px1); ry = min(py0, py1)
-            rw = abs(px1 - px0) + 1; rh = abs(py1 - py0) + 1
-            self._fb.fill_rect(rx, ry, rw, rh, color)
+            self._fb.fill_rect(x, y, w, h, color)
         else:
-            # 枠線は4辺を個別に
-            self.rect(x, y, w, 1, color, True)
-            self.rect(x, y + h - 1, w, 1, color, True)
-            self.rect(x, y, 1, h, color, True)
-            self.rect(x + w - 1, y, 1, h, color, True)
+            self._fb.rect(x, y, w, h, color)
 
     def hline(self, x, y, w, color):
-        self.rect(x, y, w, 1, color, True)
+        self._fb.hline(x, y, w, color)
 
     # ---------- 転送 ----------
     def show(self):
-        """物理縦バッファをパネルへ一括転送（バイトスワップ込み）。
-        元バッファは変更せず、転送用バッファへスワップコピーして送る。"""
-        self._swap_copy(self._buf, self._txbuf, len(self._buf))
+        """論理(横向き)バッファを物理(縦向き)へ 90°回転(＋flipで180°)＋
+        バイトスワップして転送用バッファへ書き、パネルへ一括転送する。"""
+        _t0 = time.ticks_us()
+        self._rotate_swap(self._lbuf, self._txbuf, 1 if self._flip180 else 0)
+        _t1 = time.ticks_us()
         x0 = _PANEL_OFFSET
         x1 = _PANEL_OFFSET + _PW - 1
         y0 = 0
@@ -204,16 +211,40 @@ class LCD:
         self._dc.value(1); self._cs_low()
         self._spi.write(self._txbuf)
         self._cs_high()
+        if _SHOW_PERF:
+            _t2 = time.ticks_us()
+            print("[SHOW] 回転=%.1fms SPI=%.1fms" % (
+                time.ticks_diff(_t1, _t0) / 1000,
+                time.ticks_diff(_t2, _t1) / 1000))
 
     @staticmethod
     @micropython.viper
-    def _swap_copy(src: ptr8, dst: ptr8, n: int):
-        # srcの16bitワードをバイトスワップしながらdstへコピー（元は不変）
-        i = 0
-        while i < n:
-            dst[i]     = src[i + 1]
-            dst[i + 1] = src[i]
-            i += 2
+    def _rotate_swap(src: ptr16, dst: ptr16, flip: int):
+        # 論理(横320x170) src → 物理(縦170x320) dst へ、90°回転（flipで更に180°）
+        # しつつバイトスワップ。16bitワード単位＋インナーループは加算のみ。
+        # 定数はローカルintに束ね、条件式での int() 変換(毎ループ)を排除して高速化。
+        #   非flip: 物理(px,py) ← 論理(lx=W-1-py, ly=px)   → 行内 src は +W ずつ
+        #   flip  : 物理(px,py) ← 論理(lx=py,   ly=PW-1-px) → 行内 src は -W ずつ
+        pw = 170
+        ph = 320
+        w = 320
+        py = 0
+        while py < ph:
+            didx = py * pw
+            if flip != 0:
+                sidx = (pw - 1) * w + py
+                step = 0 - w
+            else:
+                sidx = (w - 1) - py
+                step = w
+            px = 0
+            while px < pw:
+                v = int(src[sidx])
+                dst[didx] = ((v << 8) & 0xff00) | (v >> 8)
+                sidx += step
+                didx += 1
+                px += 1
+            py += 1
 
     @staticmethod
     def rgb(r, g, b):
@@ -225,15 +256,15 @@ class DisplayManager:
         # SPIは高速化で描画レスポンス改善（8MHz→40MHz）。PCBのGNDベタ前提。
         # 表示に乱れ（ノイズ/化け）が出る場合は 32_000_000 / 24_000_000 へ下げる。
         spi = SPI(0, baudrate=40_000_000, sck=Pin(_SCK), mosi=Pin(_MOSI))
-        # 物理縦バッファを1枚だけ確保して2画面で共有
-        self._buf = bytearray(_PW * _PH * 2)
-        self._fb  = framebuf.FrameBuffer(self._buf, _PW, _PH, framebuf.RGB565)
-        # 転送用バッファ（スワップ済みコピー先）も1枚確保して共有
+        # 論理(横向き320x170)バッファを1枚確保して2画面で共有（描画先）
+        self._lbuf = bytearray(W * H * 2)
+        self._fb   = framebuf.FrameBuffer(self._lbuf, W, H, framebuf.RGB565)
+        # 物理(縦170x320)転送バッファも1枚確保して共有（回転+スワップ結果）
         self._txbuf = bytearray(_PW * _PH * 2)
         # lcd0でハードリセット(1回)、lcd1はリセットせずレジスタ設定のみ。
-        self.lcd0 = LCD(spi, _CS0, _BL0, self._buf, self._fb, self._txbuf,
+        self.lcd0 = LCD(spi, _CS0, _BL0, self._lbuf, self._fb, self._txbuf,
                         do_reset=True,  flip180=LCD0_FLIP180)
-        self.lcd1 = LCD(spi, _CS1, _BL1, self._buf, self._fb, self._txbuf,
+        self.lcd1 = LCD(spi, _CS1, _BL1, self._lbuf, self._fb, self._txbuf,
                         do_reset=False, flip180=LCD1_FLIP180)
         # lcd1の初期化がlcd0の設定に干渉するため、
         # 両画面初期化後にlcd0のレジスタを流し直して確定させる。
