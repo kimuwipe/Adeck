@@ -145,6 +145,32 @@ class LCD:
         # 8pxフォントはネイティブ描画（回転はshow時にまとめて行う）
         self._fb.text(s, x, y, color)
 
+    def scaled_text(self, s, x, y, color, num=5, den=4):
+        """内蔵8pxフォントを num/den 倍で描く（既定1.25倍＝10px）。
+        small_text(8px) と text(16px) の中間サイズが欲しい時に使う。
+        8pxグリフを一時FrameBufferに描いてから fill_rect で拡大する。"""
+        n = len(s)
+        if n == 0:
+            return
+        tw = 8 * n
+        tmp = bytearray(tw * 8 * 2)
+        tfb = framebuf.FrameBuffer(tmp, tw, 8, framebuf.RGB565)
+        tfb.fill(0x0000)
+        tfb.text(s, 0, 0, color)
+        fb = self._fb
+        for cy in range(8):
+            y0 = y + (cy * num) // den
+            h = ((cy + 1) * num) // den - (cy * num) // den
+            if h < 1:
+                h = 1
+            for cx in range(tw):
+                if tfb.pixel(cx, cy):
+                    x0 = x + (cx * num) // den
+                    w = ((cx + 1) * num) // den - (cx * num) // den
+                    if w < 1:
+                        w = 1
+                    fb.fill_rect(x0, y0, w, h, color)
+
     def text_jp(self, s, x, y, color):
         """ASCIIと日本語(16x16)の混在文字列を16px等幅で描く。
         ASCIIは scale=2 の内蔵フォント、日本語は jpfont のグリフを blit。

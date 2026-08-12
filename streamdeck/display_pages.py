@@ -33,6 +33,8 @@ TEAL   = 0x0540
 NAVY   = 0x000D
 GOLD   = 0xFEA0
 PURPLE = 0x801F
+MAROON = 0x8000   # 濃い赤（SWマップのヘッダ）
+DGREEN = 0x0340   # 濃い緑（ENCマップのヘッダ）
 
 PROFILE_COLORS = [CYAN, GREEN, YELLOW, ORANGE]
 
@@ -59,10 +61,10 @@ PAD     = 4
 # ===== 共通パーツ =====
 
 def _header(lcd: LCD, title: str, color: int):
-    """カラーヘッダバー（small_text=8px で描画）。
+    """カラーヘッダバー（濃色＋白文字で読みやすく）。
     右上は現在プロファイル（プリセット）バッジ用に空けておく。"""
     lcd.rect(0, 0, W, HDR_H, color, fill=True)
-    lcd.small_text(title[:22], PAD, 5, BLACK)
+    lcd.small_text(title[:22], PAD, 5, WHITE)
 
 
 def _profile_badge(lcd: LCD, state) -> None:
@@ -76,16 +78,18 @@ def _profile_badge(lcd: LCD, state) -> None:
     is_ascii = bool(name) and all(ord(c) < 128 for c in name)
     if is_ascii:
         label = name[:8]
-        bw    = len(label) * 8 + 8
-        x0    = W - bw
-        lcd.rect(x0, 0, bw, HDR_H, col, fill=True)
-        lcd.small_text(label, x0 + 4, 5, BLACK)
+        bw    = len(label) * 8 + 10
     else:
         label = (name or "P{}".format(pi + 1))[:4]
-        bw    = len(label) * 16 + 8
-        x0    = W - bw
-        lcd.rect(x0, 0, bw, HDR_H, col, fill=True)
-        lcd.text_jp(label, x0 + 4, 1, BLACK)
+        bw    = len(label) * 16 + 10
+    x0 = W - bw
+    # ページ名とプロファイルバッジの境界線（白の縦線）
+    lcd.rect(x0 - 2, 0, 2, HDR_H, WHITE, fill=True)
+    lcd.rect(x0, 0, bw, HDR_H, col, fill=True)
+    if is_ascii:
+        lcd.small_text(label, x0 + 5, 5, BLACK)
+    else:
+        lcd.text_jp(label, x0 + 5, 1, BLACK)
 
 def _vline(lcd: LCD):
     """垂直区切り線"""
@@ -116,15 +120,15 @@ def _section(lcd: LCD, x: int, y: int, label: str) -> int:
     return y + SH
 
 def _name_line(lcd: LCD, s: str, x: int, y: int, color: int,
-               ascii_max: int = 18, jp_max: int = 8) -> int:
-    """名前行を描画：英字(ASCII)のみなら8px(small_text)、日本語を含めば16px(text_jp)。
+               ascii_max: int = 14, jp_max: int = 8) -> int:
+    """名前行を描画：英字(ASCII)のみなら10px(scaled_text)、日本語を含めば16px(text_jp)。
     日本語フォントは16pxのみのため文字種で自動選択する。使用した行高さを返す。"""
     for ch in s:
         if ord(ch) >= 128:
             lcd.text_jp(s[:jp_max], x, y, color)
             return CH
-    lcd.small_text(s[:ascii_max], x, y, color)
-    return SH + 2
+    lcd.scaled_text(s[:ascii_max], x, y, color)
+    return 12
 
 
 # ===== ページ0: 日付時刻・音量・マイク・天気 =====
@@ -194,9 +198,9 @@ def draw_page1(lcd: LCD, page: int, state) -> None:
     y = BODY_Y
     y = _section(lcd, PAD, y, "ACTIVE")
     for app in apps[:8]:
-        lcd.small_text(app[:16], PAD, y, WHITE)
-        y += SH + 2
-        if y > DOT_Y - SH:
+        lcd.scaled_text(app[:14], PAD, y, WHITE)   # 10px（8pxより少し大きく）
+        y += 12
+        if y > DOT_Y - 12:
             break
 
     # 右カラム: 9件目以降（small_textで多めに表示）
@@ -221,7 +225,7 @@ def draw_page2(lcd: LCD, page: int, state) -> None:
     lcd.fill(BLACK)
     pi   = state.profile
     pcol = PROFILE_COLORS[pi % len(PROFILE_COLORS)]
-    _header(lcd, "PROFILE", pcol)
+    _header(lcd, "PROFILE", PURPLE)   # ヘッダは固定色（プロファイル色はバッジ側）
     _vline(lcd)
 
     # 左カラム: 現在（日本語対応・16px）
@@ -255,7 +259,7 @@ def draw_page3(lcd: LCD, page: int, state) -> None:
     lcd.fill(BLACK)
     pi   = state.profile
     pcol = PROFILE_COLORS[pi % len(PROFILE_COLORS)]
-    _header(lcd, "SWITCH MAP", pcol)   # プロファイル名は右上バッジで表示
+    _header(lcd, "SWITCH MAP", MAROON)   # ヘッダは固定色（プロファイルはバッジ）
 
     sws    = SWITCH_MAP[pi]
     # スイッチのプリセット名（設定アプリで付与。無ければアクション文字列を表示）
@@ -301,7 +305,7 @@ def draw_page4(lcd: LCD, page: int, state) -> None:
     lcd.fill(BLACK)
     pi   = state.profile
     pcol = PROFILE_COLORS[pi % len(PROFILE_COLORS)]
-    _header(lcd, "ENCODER MAP", pcol)   # プロファイル名は右上バッジで表示
+    _header(lcd, "ENCODER MAP", DGREEN)   # ヘッダは固定色（プロファイルはバッジ）
     _vline(lcd)
 
     encs   = ENCODER_MAP[pi]
