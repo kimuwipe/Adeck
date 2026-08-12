@@ -384,6 +384,10 @@ if __name__ == "__main__":
 try:
     import pyautogui
     pyautogui.FAILSAFE = False
+    # pyautogui は関数呼び出しごとに既定 0.1秒の待ちを入れる（PAUSE）。
+    # keyDown/press/keyUp を複数回呼ぶと数百msの遅延になり「重い」原因になる。
+    # 必要な待ちは _press_hotkey 内で明示的に入れるため 0 にする。
+    pyautogui.PAUSE = 0
     PYAUTOGUI_OK = True
 except ImportError:
     PYAUTOGUI_OK = False
