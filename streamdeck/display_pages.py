@@ -115,6 +115,17 @@ def _section(lcd: LCD, x: int, y: int, label: str) -> int:
     _hline(lcd, y + 9, x, x + min(len(label) * 8 + 4, W - x))
     return y + SH
 
+def _name_line(lcd: LCD, s: str, x: int, y: int, color: int,
+               ascii_max: int = 18, jp_max: int = 8) -> int:
+    """名前行を描画：英字(ASCII)のみなら8px(small_text)、日本語を含めば16px(text_jp)。
+    日本語フォントは16pxのみのため文字種で自動選択する。使用した行高さを返す。"""
+    for ch in s:
+        if ord(ch) >= 128:
+            lcd.text_jp(s[:jp_max], x, y, color)
+            return CH
+    lcd.small_text(s[:ascii_max], x, y, color)
+    return SH + 2
+
 
 # ===== ページ0: 日付時刻・音量・マイク・天気 =====
 def draw_page0(lcd: LCD, page: int, state) -> None:
@@ -179,23 +190,23 @@ def draw_page1(lcd: LCD, page: int, state) -> None:
     _vline(lcd)
 
     apps  = state.apps or []
-    # 左カラム: 先頭4件（scale=2で表示）
+    # 左カラム: 先頭8件（small_textで小さく表示）
     y = BODY_Y
     y = _section(lcd, PAD, y, "ACTIVE")
-    for app in apps[:4]:
-        lcd.text(app[:8], PAD, y, WHITE)
-        y += CH
-        if y > DOT_Y - CH:
+    for app in apps[:8]:
+        lcd.small_text(app[:16], PAD, y, WHITE)
+        y += SH + 2
+        if y > DOT_Y - SH:
             break
 
-    # 右カラム: 5件目以降（small_textで多めに表示）
+    # 右カラム: 9件目以降（small_textで多めに表示）
     y = BODY_Y
     y = _section(lcd, COL_R, y, "MORE")
-    rest = apps[4:12]
+    rest = apps[8:16]
     if rest:
         for app in rest:
             lcd.small_text(app[:18], COL_R, y, GRAY)
-            y += SH
+            y += SH + 2
             if y > DOT_Y - SH:
                 break
     else:
@@ -220,18 +231,19 @@ def draw_page2(lcd: LCD, page: int, state) -> None:
     y += CH + 4
     lcd.small_text("TAP:next", PAD, y, DKGRAY)
 
-    # 右カラム: 一覧（日本語対応・16px。多い場合は現在位置が入る窓で表示）
+    # 右カラム: 一覧（英字は8px・日本語は16px。多い場合は現在位置が入る窓で表示）
     y = BODY_Y
     y = _section(lcd, COL_R, y, "ALL")
-    maxrows = 6
+    maxrows = 8
     start   = 0
     if pi >= maxrows:
         start = pi - maxrows + 1
     for i in range(start, min(len(PROFILES), start + maxrows)):
         arrow = ">" if i == pi else " "
         col   = pcol if i == pi else GRAY
-        lcd.text_jp(f"{arrow}{PROFILES[i][:6]}", COL_R, y, col)
-        y += CH
+        y += _name_line(lcd, f"{arrow}{PROFILES[i]}", COL_R, y, col)
+        if y > DOT_Y - SH:
+            break
 
     _dots(lcd, page)
 
@@ -265,19 +277,20 @@ def draw_page3(lcd: LCD, page: int, state) -> None:
         # SW番号（small_text）
         lcd.small_text(f"SW{i+1}", cx + 2, cy + 2, DKGRAY)
 
-        # プリセット名があれば日本語対応で表示、無ければ従来のアクション文字列
+        # プリセット名（あれば）→ 無ければアクション文字列。
+        # 英字は8px、日本語(プリセット名)は16pxで自動表示。
         lab = plabels[i] if (plabels and i < len(plabels)) else None
         if lab:
-            lcd.text_jp(str(lab)[:8], cx + 2, cy + 12, WHITE)
+            disp = str(lab)
         else:
             action = sws[i]
             if action is None:
-                label = "--"
+                disp = "--"
             elif action == "PROFILE_NEXT":
-                label = "PROF.NXT"
+                disp = "PROF.NXT"
             else:
-                label = action[:8]
-            lcd.text(label, cx + 2, cy + 12, WHITE)
+                disp = action
+        _name_line(lcd, disp, cx + 2, cy + 13, WHITE, ascii_max=16, jp_max=7)
 
     _dots(lcd, page)
 
