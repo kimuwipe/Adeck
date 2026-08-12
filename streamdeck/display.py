@@ -150,10 +150,11 @@ class LCD:
         self._fb.text(s, x, y, color)
         self._fb.text(s, x + 1, y, color)
 
-    def scaled_text(self, s, x, y, color, num=5, den=4):
+    def scaled_text(self, s, x, y, color, num=5, den=4, bold=False):
         """内蔵8pxフォントを num/den 倍で描く（既定1.25倍＝10px）。
         small_text(8px) と text(16px) の中間サイズが欲しい時に使う。
-        8pxグリフを一時FrameBufferに描いてから fill_rect で拡大する。"""
+        8pxグリフを一時FrameBufferに描いてから fill_rect で拡大する。
+        bold=True で1px右に重ね描きして太字風。"""
         n = len(s)
         if n == 0:
             return
@@ -175,6 +176,8 @@ class LCD:
                     if w < 1:
                         w = 1
                     fb.fill_rect(x0, y0, w, h, color)
+                    if bold:
+                        fb.fill_rect(x0 + 1, y0, w, h, color)
 
     def text_jp(self, s, x, y, color, bold=False):
         """ASCIIと日本語(16x16)の混在文字列を16px等幅で描く。

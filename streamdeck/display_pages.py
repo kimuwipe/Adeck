@@ -47,7 +47,7 @@ WEATHER_ICON = {
 }
 
 # レイアウト定数
-HDR_H   = 18     # ヘッダ高さ（small_text=8px + 余白）
+HDR_H   = 24     # ヘッダ高さ（12pxタイトル＋余白・下に拡大）
 DOT_Y   = H - 9  # ページドット Y座標
 BODY_Y  = HDR_H + 2          # コンテンツ開始Y
 BODY_H  = DOT_Y - BODY_Y     # コンテンツ高さ（約144px）
@@ -64,7 +64,8 @@ def _header(lcd: LCD, title: str, color: int):
     """カラーヘッダバー（濃色＋白文字で読みやすく）。
     右上は現在プロファイル（プリセット）バッジ用に空けておく。"""
     lcd.rect(0, 0, W, HDR_H, color, fill=True)
-    lcd.small_text_bold(title[:22], PAD, 5, WHITE)
+    # ページ名は12px太字（バッジ領域=右2/5に被らないよう15字まで）
+    lcd.scaled_text(title[:15], PAD, 6, WHITE, num=3, den=2, bold=True)
 
 
 def _profile_badge(lcd: LCD, state) -> None:
@@ -83,11 +84,12 @@ def _profile_badge(lcd: LCD, state) -> None:
     lcd.rect(x0 - 2, 0, 2, HDR_H, WHITE, fill=True)
     lcd.rect(x0, 0, bw, HDR_H, col, fill=True)
     if is_ascii:
-        label = name[:(bw - pad * 2) // 8]       # 領域に収まる最大長
-        lcd.small_text_bold(label, W - len(label) * 8 - pad, 5, BLACK)   # 右詰め・太字
+        label = name[:(bw - pad * 2) // 12]      # 12px・領域に収まる最大長
+        lcd.scaled_text(label, W - len(label) * 12 - pad, 6, BLACK,
+                        num=3, den=2, bold=True)          # 右詰め・太字
     else:
         label = (name or "P{}".format(pi + 1))[:(bw - pad * 2) // 16]
-        lcd.text_jp(label, W - len(label) * 16 - pad, 1, BLACK, bold=True)  # 右詰め・太字
+        lcd.text_jp(label, W - len(label) * 16 - pad, 4, BLACK, bold=True)  # 右詰め・太字
 
 def _vline(lcd: LCD):
     """垂直区切り線"""
@@ -132,7 +134,7 @@ def _name_line(lcd: LCD, s: str, x: int, y: int, color: int,
 # ===== ページ0: 日付時刻・音量・マイク・天気 =====
 def draw_page0(lcd: LCD, page: int, state) -> None:
     lcd.fill(BLACK)
-    _header(lcd, "CLOCK / VOL / WX", TEAL)
+    _header(lcd, "DATE / VOL / WX", TEAL)
 
     # ── 日付/時刻（16px・曜日は漢字。PC未接続時はプレースホルダ）
     dt = state.datetime if state.datetime else "--/--(-) --:--"
