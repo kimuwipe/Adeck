@@ -21,6 +21,17 @@ import time
 import threading
 import queue
 
+# クラッシュ診断：致命シグナル(アクセス違反等)発生時に全スレッドのスタックを
+# %TEMP%/streamdeck_fault.log へ出力する（ネイティブクラッシュはPython例外に
+# 出ないため。低オーバーヘッドなので常時有効にしておく）。
+try:
+    import faulthandler as _faulthandler, os as _os, tempfile as _tempfile
+    _fault_fp = open(_os.path.join(_tempfile.gettempdir(), "streamdeck_fault.log"),
+                     "w", buffering=1)
+    _faulthandler.enable(_fault_fp)
+except Exception:
+    pass
+
 # COMは MTA で初期化する（comtypes は import 前の sys.coinit_flags を見る）。
 # エントリポイントなので agent/comtypes より前のここで確実に設定しておく。
 # 目的: pycaw のCOMオブジェクトがメインスレッドのGCで Release されても
@@ -84,6 +95,9 @@ class AgentThread:
         self._threads = []
         self._send_lock = threading.Lock()
         self._font_sent = False   # 接続ごとに日本語フォントを1回送る（LCD任意名対応）
+        self._font_lock = threading.Lock()   # PIL(FreeType)描画をスレッド間で直列化
+        self._font_cache_key = None
+        self._font_cache = None
         self._current_profile = None
         self._auto_enabled = False
         self._auto_rules = {}
@@ -217,6 +231,20 @@ class AgentThread:
                 self._log(f"天気更新: {self._weather.get('desc', '?')}")
         return self._weather
 
+    def _build_font_glyphs(self):
+        """表示名の日本語グリフを生成。PIL(FreeType)はスレッド安全でない場合が
+        あるため、ロックで直列化し、文字集合が同じ間はキャッシュを返して
+        PIL呼び出し自体を最小化する。"""
+        import fontgen
+        with self._font_lock:
+            key = tuple(fontgen.collect_name_chars(self._cfg))
+            if key == self._font_cache_key and self._font_cache is not None:
+                return self._font_cache
+            glyphs = fontgen.build_name_glyph_hex(self._cfg)
+            self._font_cache_key = key
+            self._font_cache = glyphs
+            return glyphs
+
     def _send_font(self):
         """LCD表示名(プロファイル名/割り当て済みプリセット名)の日本語グリフをPicoへ
         シリアル送信し、メモリ上フォント(display._JPFONT)を更新させる。
@@ -226,8 +254,7 @@ class AgentThread:
         if not (self._ser and self._ser.is_open) or not CFG_OK:
             return
         try:
-            import fontgen
-            glyphs = fontgen.build_name_glyph_hex(self._cfg)
+            glyphs = self._build_font_glyphs()
         except Exception as e:
             self._log(f"フォント生成スキップ: {e}")
             return
