@@ -162,6 +162,30 @@ def apply_live_config(msg):
     print("[CONFIG] ライブ設定を反映")
     serial_send({"type": "config_ack"})
 
+
+def apply_font(msg):
+    """PCから受け取った日本語グリフを display._JPFONT にメモリ上でマージする。
+    MicroPython Pico はドライブとして見えず「Picoに書き込む」が使えないため、
+    表示名（プロファイル名/割り当て済みプリセット名）のフォントをシリアルで
+    受け取って即反映する。16進(64桁)→32バイト MONO_HLSB。"""
+    glyphs = msg.get("glyphs")
+    if not isinstance(glyphs, dict):
+        return
+    import binascii
+    import display as _disp
+    n = 0
+    for ch, hx in glyphs.items():
+        try:
+            _disp._JPFONT[ch] = binascii.unhexlify(hx)
+            n += 1
+        except Exception:
+            pass
+    state.dirty0 = True
+    state.dirty1 = True
+    gc.collect()
+    serial_send({"type": "font_ack", "n": n})
+    print("[FONT] %d 字を反映" % n)
+
 # ===== 初期化 =====
 print("[BOOT] 初期化開始")
 kbd       = HIDKeyboard()
@@ -227,6 +251,8 @@ while True:
             set_profile_by(msg.get("profile"), msg.get("index"))
         elif t == "config":
             apply_live_config(msg)
+        elif t == "font":
+            apply_font(msg)
 
     # ── タッチ
     #   タップ → 次のプロファイル（プリセット）へ切替（各画面右上のバッジ表示）

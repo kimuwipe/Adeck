@@ -57,6 +57,37 @@ def collect_chars(cfg: dict) -> list[str]:
     return sorted(chars)
 
 
+def collect_name_chars(cfg: dict) -> list[str]:
+    """LCDに表示される「名前」だけの非ASCII文字を集める。
+    プロファイル名＋スイッチ/エンコーダの表示ラベル（＝割り当て済みプリセット名）。
+    天気/曜日/記号は静的フォントに収録済みなので除外し、シリアル送信を軽量に保つ。"""
+    buf = list(cfg.get("profiles", []))
+    for prof in cfg.get("switches", []):
+        for sw in prof:
+            buf.append(sw.get("label", "") or "")
+    for prof in cfg.get("encoders", []):
+        for enc in prof:
+            for dk in ("cw", "ccw", "push"):
+                buf.append(enc.get(f"label_{dk}", "") or "")
+    chars = set()
+    for s in buf:
+        for ch in s:
+            if ord(ch) >= 128:
+                chars.add(ch)
+    return sorted(chars)
+
+
+def build_name_glyph_hex(cfg: dict) -> dict:
+    """表示名の非ASCII文字を {文字: 16進バイト列(64桁)} で返す（シリアル送信用）。
+    Picoは受信後 display._JPFONT[文字]=bytes.fromhex(...) でメモリ上フォントを更新する。
+    PIL/TTF が無い等で失敗したら例外。"""
+    chars = collect_name_chars(cfg)
+    if not chars:
+        return {}
+    font = _load_font()
+    return {ch: _glyph_bytes(font, ch).hex() for ch in chars}
+
+
 def _load_font():
     from PIL import ImageFont
     for path, idx in _FONT_CANDIDATES:
