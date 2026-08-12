@@ -162,7 +162,7 @@ class LCD:
         tmp = bytearray(tw * 8 * 2)
         tfb = framebuf.FrameBuffer(tmp, tw, 8, framebuf.RGB565)
         tfb.fill(0x0000)
-        tfb.text(s, 0, 0, color)
+        tfb.text(s, 0, 0, 0xFFFF)   # 検出用は常に白（黒文字も描けるよう。実色はfill_rect側）
         fb = self._fb
         for cy in range(8):
             y0 = y + (cy * num) // den
@@ -213,7 +213,7 @@ class LCD:
         tmp = bytearray(tw * 8 * 2)
         tfb = framebuf.FrameBuffer(tmp, tw, 8, framebuf.RGB565)
         tfb.fill(0x0000)
-        tfb.text(s, 0, 0, color)
+        tfb.text(s, 0, 0, 0xFFFF)   # 検出用は常に白（黒文字も描けるよう。実色はfill_rect側）
         fb = self._fb
         for cy in range(8):
             yy = y + cy * scale
