@@ -1154,11 +1154,19 @@ class EditorFrame(ctk.CTkFrame):
         try:
             with open(dst, "w", encoding="utf-8") as f:
                 f.write(py_text)
-            messagebox.showinfo("書き込み完了",
-                f"config.py を {drive} に書き込みました。\n"
-                "Pico を再起動すると設定が反映されます。")
         except Exception as e:
             messagebox.showerror("書き込みエラー", str(e))
+            return
+        # 使用文字だけの日本語フォント jpfont.py も生成して同梱
+        # （プロファイル名・プリセット名など任意の日本語をLCDで確実に表示）
+        try:
+            import fontgen
+            font_msg = fontgen.write_jpfont(self.cfg, drive)
+        except Exception as e:
+            font_msg = f"フォント同梱をスキップ（{e}）。"
+        messagebox.showinfo("書き込み完了",
+            f"config.py を {drive} に書き込みました。\n{font_msg}\n"
+            "Pico を再起動すると設定が反映されます。")
 
 
 # ===== 単体起動用 薄いラッパー（統合UIからは EditorFrame を直接埋め込む）=====
