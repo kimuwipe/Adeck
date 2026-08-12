@@ -33,6 +33,8 @@ TEAL   = 0x0540
 NAVY   = 0x000D
 GOLD   = 0xFEA0
 PURPLE = 0x801F
+MAROON = 0x8000   # 濃い赤（SWマップのヘッダ）
+DGREEN = 0x0340   # 濃い緑（ENCマップのヘッダ）
 
 PROFILE_COLORS = [CYAN, GREEN, YELLOW, ORANGE]
 
@@ -45,7 +47,7 @@ WEATHER_ICON = {
 }
 
 # レイアウト定数
-HDR_H   = 18     # ヘッダ高さ（small_text=8px + 余白）
+HDR_H   = 24     # ヘッダ高さ（12pxタイトル＋余白・下に拡大）
 DOT_Y   = H - 9  # ページドット Y座標
 BODY_Y  = HDR_H + 2          # コンテンツ開始Y
 BODY_H  = DOT_Y - BODY_Y     # コンテンツ高さ（約144px）
@@ -59,10 +61,11 @@ PAD     = 4
 # ===== 共通パーツ =====
 
 def _header(lcd: LCD, title: str, color: int):
-    """カラーヘッダバー（small_text=8px で描画）。
+    """カラーヘッダバー（濃色＋白文字で読みやすく）。
     右上は現在プロファイル（プリセット）バッジ用に空けておく。"""
     lcd.rect(0, 0, W, HDR_H, color, fill=True)
-    lcd.small_text(title[:22], PAD, 5, BLACK)
+    # ページ名は12px太字（バッジ領域=右2/5に被らないよう15字まで）
+    lcd.scaled_text(title[:15], PAD, 6, WHITE, num=3, den=2, bold=True)
 
 
 def _profile_badge(lcd: LCD, state) -> None:
@@ -74,18 +77,19 @@ def _profile_badge(lcd: LCD, state) -> None:
     col  = PROFILE_COLORS[pi % len(PROFILE_COLORS)]
     name = PROFILES[pi] if pi < len(PROFILES) else ""
     is_ascii = bool(name) and all(ord(c) < 128 for c in name)
+    bw  = W * 2 // 5              # バッジ領域は画面の約2/5で固定
+    x0  = W - bw
+    pad = 6
+    # ページ名とプロファイルバッジの境界線（白の縦線）＋バッジ背景
+    lcd.rect(x0 - 2, 0, 2, HDR_H, WHITE, fill=True)
+    lcd.rect(x0, 0, bw, HDR_H, col, fill=True)
     if is_ascii:
-        label = name[:8]
-        bw    = len(label) * 8 + 8
-        x0    = W - bw
-        lcd.rect(x0, 0, bw, HDR_H, col, fill=True)
-        lcd.small_text(label, x0 + 4, 5, BLACK)
+        label = name[:(bw - pad * 2) // 12]      # 12px・領域に収まる最大長
+        lcd.scaled_text(label, W - len(label) * 12 - pad, 6, BLACK,
+                        num=3, den=2, bold=True)          # 右詰め・太字
     else:
-        label = (name or "P{}".format(pi + 1))[:4]
-        bw    = len(label) * 16 + 8
-        x0    = W - bw
-        lcd.rect(x0, 0, bw, HDR_H, col, fill=True)
-        lcd.text_jp(label, x0 + 4, 1, BLACK)
+        label = (name or "P{}".format(pi + 1))[:(bw - pad * 2) // 16]
+        lcd.text_jp(label, W - len(label) * 16 - pad, 4, BLACK, bold=True)  # 右詰め・太字
 
 def _vline(lcd: LCD):
     """垂直区切り線"""
@@ -115,11 +119,22 @@ def _section(lcd: LCD, x: int, y: int, label: str) -> int:
     _hline(lcd, y + 9, x, x + min(len(label) * 8 + 4, W - x))
     return y + SH
 
+def _name_line(lcd: LCD, s: str, x: int, y: int, color: int,
+               ascii_max: int = 14, jp_max: int = 8) -> int:
+    """名前行を描画：英字(ASCII)のみなら10px(scaled_text)、日本語を含めば16px(text_jp)。
+    日本語フォントは16pxのみのため文字種で自動選択する。使用した行高さを返す。"""
+    for ch in s:
+        if ord(ch) >= 128:
+            lcd.text_jp(s[:jp_max], x, y, color)
+            return CH
+    lcd.scaled_text(s[:ascii_max], x, y, color)
+    return 12
+
 
 # ===== ページ0: 日付時刻・音量・マイク・天気 =====
 def draw_page0(lcd: LCD, page: int, state) -> None:
     lcd.fill(BLACK)
-    _header(lcd, "CLOCK / VOL / WX", TEAL)
+    _header(lcd, "DATE / VOL / WX", TEAL)
 
     # ── 日付/時刻（16px・曜日は漢字。PC未接続時はプレースホルダ）
     dt = state.datetime if state.datetime else "--/--(-) --:--"
@@ -179,23 +194,23 @@ def draw_page1(lcd: LCD, page: int, state) -> None:
     _vline(lcd)
 
     apps  = state.apps or []
-    # 左カラム: 先頭4件（scale=2で表示）
+    # 左カラム: 先頭8件（small_textで小さく表示）
     y = BODY_Y
     y = _section(lcd, PAD, y, "ACTIVE")
-    for app in apps[:4]:
-        lcd.text(app[:8], PAD, y, WHITE)
-        y += CH
-        if y > DOT_Y - CH:
+    for app in apps[:8]:
+        lcd.scaled_text(app[:14], PAD, y, WHITE)   # 10px（8pxより少し大きく）
+        y += 12
+        if y > DOT_Y - 12:
             break
 
-    # 右カラム: 5件目以降（small_textで多めに表示）
+    # 右カラム: 9件目以降（small_textで多めに表示）
     y = BODY_Y
     y = _section(lcd, COL_R, y, "MORE")
-    rest = apps[4:12]
+    rest = apps[8:16]
     if rest:
         for app in rest:
             lcd.small_text(app[:18], COL_R, y, GRAY)
-            y += SH
+            y += SH + 2
             if y > DOT_Y - SH:
                 break
     else:
@@ -210,28 +225,29 @@ def draw_page2(lcd: LCD, page: int, state) -> None:
     lcd.fill(BLACK)
     pi   = state.profile
     pcol = PROFILE_COLORS[pi % len(PROFILE_COLORS)]
-    _header(lcd, "PROFILE", pcol)
+    _header(lcd, "PROFILE", PURPLE)   # ヘッダは固定色（プロファイル色はバッジ側）
     _vline(lcd)
 
-    # 左カラム: 現在（日本語対応・16px）
+    # 左カラム: 現在（英字10px / 日本語16px＝ALLと同じサイズ）
     y = BODY_Y
     y = _section(lcd, PAD, y, "NOW")
-    lcd.text_jp((PROFILES[pi] if pi < len(PROFILES) else "")[:6], PAD, y, pcol)
-    y += CH + 4
+    h = _name_line(lcd, (PROFILES[pi] if pi < len(PROFILES) else ""), PAD, y, pcol)
+    y += h + 4
     lcd.small_text("TAP:next", PAD, y, DKGRAY)
 
-    # 右カラム: 一覧（日本語対応・16px。多い場合は現在位置が入る窓で表示）
+    # 右カラム: 一覧（英字は8px・日本語は16px。多い場合は現在位置が入る窓で表示）
     y = BODY_Y
     y = _section(lcd, COL_R, y, "ALL")
-    maxrows = 6
+    maxrows = 8
     start   = 0
     if pi >= maxrows:
         start = pi - maxrows + 1
     for i in range(start, min(len(PROFILES), start + maxrows)):
         arrow = ">" if i == pi else " "
         col   = pcol if i == pi else GRAY
-        lcd.text_jp(f"{arrow}{PROFILES[i][:6]}", COL_R, y, col)
-        y += CH
+        y += _name_line(lcd, f"{arrow}{PROFILES[i]}", COL_R, y, col)
+        if y > DOT_Y - SH:
+            break
 
     _dots(lcd, page)
 
@@ -243,7 +259,7 @@ def draw_page3(lcd: LCD, page: int, state) -> None:
     lcd.fill(BLACK)
     pi   = state.profile
     pcol = PROFILE_COLORS[pi % len(PROFILE_COLORS)]
-    _header(lcd, "SWITCH MAP", pcol)   # プロファイル名は右上バッジで表示
+    _header(lcd, "SWITCH MAP", MAROON)   # ヘッダは固定色（プロファイルはバッジ）
 
     sws    = SWITCH_MAP[pi]
     # スイッチのプリセット名（設定アプリで付与。無ければアクション文字列を表示）
@@ -265,19 +281,20 @@ def draw_page3(lcd: LCD, page: int, state) -> None:
         # SW番号（small_text）
         lcd.small_text(f"SW{i+1}", cx + 2, cy + 2, DKGRAY)
 
-        # プリセット名があれば日本語対応で表示、無ければ従来のアクション文字列
+        # プリセット名（あれば）→ 無ければアクション文字列。
+        # 英字は8px、日本語(プリセット名)は16pxで自動表示。
         lab = plabels[i] if (plabels and i < len(plabels)) else None
         if lab:
-            lcd.text_jp(str(lab)[:8], cx + 2, cy + 12, WHITE)
+            disp = str(lab)
         else:
             action = sws[i]
             if action is None:
-                label = "--"
+                disp = "--"
             elif action == "PROFILE_NEXT":
-                label = "PROF.NXT"
+                disp = "PROF.NXT"
             else:
-                label = action[:8]
-            lcd.text(label, cx + 2, cy + 12, WHITE)
+                disp = action
+        _name_line(lcd, disp, cx + 2, cy + 13, WHITE, ascii_max=16, jp_max=7)
 
     _dots(lcd, page)
 
@@ -288,7 +305,7 @@ def draw_page4(lcd: LCD, page: int, state) -> None:
     lcd.fill(BLACK)
     pi   = state.profile
     pcol = PROFILE_COLORS[pi % len(PROFILE_COLORS)]
-    _header(lcd, "ENCODER MAP", pcol)   # プロファイル名は右上バッジで表示
+    _header(lcd, "ENCODER MAP", DGREEN)   # ヘッダは固定色（プロファイルはバッジ）
     _vline(lcd)
 
     encs   = ENCODER_MAP[pi]

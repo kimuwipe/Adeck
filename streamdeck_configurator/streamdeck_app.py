@@ -83,6 +83,7 @@ class AgentThread:
         self._weather_at = 0
         self._threads = []
         self._send_lock = threading.Lock()
+        self._font_sent = False   # 接続ごとに日本語フォントを1回送る（LCD任意名対応）
         self._current_profile = None
         self._auto_enabled = False
         self._auto_rules = {}
@@ -121,6 +122,7 @@ class AgentThread:
             self._ser = serial.Serial(port, baudrate=115200, timeout=1)
             self._log(f"{port} に接続しました")
             self._status(connected=True, port=port)
+            self._font_sent = False   # 新接続では再送（Pico再起動でメモリ上フォントが消えるため）
             return True
         except Exception as e:
             self._log(f"接続エラー: {e}")
@@ -215,6 +217,24 @@ class AgentThread:
                 self._log(f"天気更新: {self._weather.get('desc', '?')}")
         return self._weather
 
+    def _send_font(self):
+        """LCD表示名(プロファイル名/割り当て済みプリセット名)の日本語グリフをPicoへ
+        シリアル送信し、メモリ上フォント(display._JPFONT)を更新させる。
+        MicroPicoはドライブとして見えず「Picoに書き込む」が使えない環境でも、
+        任意の日本語名がLCDに文字化けせず表示できるようになる。"""
+        self._font_sent = True   # 成否に関わらず繰り返さない（失敗時はログのみ）
+        if not (self._ser and self._ser.is_open) or not CFG_OK:
+            return
+        try:
+            import fontgen
+            glyphs = fontgen.build_name_glyph_hex(self._cfg)
+        except Exception as e:
+            self._log(f"フォント生成スキップ: {e}")
+            return
+        if glyphs:
+            self._send({"type": "font", "glyphs": glyphs})
+            self._log(f"日本語フォント送信（{len(glyphs)}字）")
+
     def _info_loop(self):
         if AGENT_OK:
             ag.co_initialize()   # このスレッドで pycaw(音量/マイク取得) を使うため
@@ -225,6 +245,8 @@ class AgentThread:
                 self._connect()
                 time.sleep(2)
                 continue
+            if not self._font_sent:
+                self._send_font()   # 接続ごとに1回、表示名のフォントを送る
             if not AGENT_OK:
                 time.sleep(interval)
                 continue
@@ -253,6 +275,7 @@ class AgentThread:
             return False
         self._send({"type": "config", "profiles": profiles,
                     "switches": sm, "encoders": em, "switch_labels": sl})
+        self._send_font()   # 表示名が変わった可能性があるのでフォントも即再送
         self._log("ライブ設定を送信しました（書込なし即反映）")
         self._load_auto_profile()   # ルール等も最新化
         return True

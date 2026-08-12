@@ -145,14 +145,50 @@ class LCD:
         # 8pxフォントはネイティブ描画（回転はshow時にまとめて行う）
         self._fb.text(s, x, y, color)
 
-    def text_jp(self, s, x, y, color):
+    def small_text_bold(self, s, x, y, color):
+        # 1px右にもう一度重ね描きして太字風にする
+        self._fb.text(s, x, y, color)
+        self._fb.text(s, x + 1, y, color)
+
+    def scaled_text(self, s, x, y, color, num=5, den=4, bold=False):
+        """内蔵8pxフォントを num/den 倍で描く（既定1.25倍＝10px）。
+        small_text(8px) と text(16px) の中間サイズが欲しい時に使う。
+        8pxグリフを一時FrameBufferに描いてから fill_rect で拡大する。
+        bold=True で1px右に重ね描きして太字風。"""
+        n = len(s)
+        if n == 0:
+            return
+        tw = 8 * n
+        tmp = bytearray(tw * 8 * 2)
+        tfb = framebuf.FrameBuffer(tmp, tw, 8, framebuf.RGB565)
+        tfb.fill(0x0000)
+        tfb.text(s, 0, 0, 0xFFFF)   # 検出用は常に白（黒文字も描けるよう。実色はfill_rect側）
+        fb = self._fb
+        for cy in range(8):
+            y0 = y + (cy * num) // den
+            h = ((cy + 1) * num) // den - (cy * num) // den
+            if h < 1:
+                h = 1
+            for cx in range(tw):
+                if tfb.pixel(cx, cy):
+                    x0 = x + (cx * num) // den
+                    w = ((cx + 1) * num) // den - (cx * num) // den
+                    if w < 1:
+                        w = 1
+                    fb.fill_rect(x0, y0, w, h, color)
+                    if bold:
+                        fb.fill_rect(x0 + 1, y0, w, h, color)
+
+    def text_jp(self, s, x, y, color, bold=False):
         """ASCIIと日本語(16x16)の混在文字列を16px等幅で描く。
         ASCIIは scale=2 の内蔵フォント、日本語は jpfont のグリフを blit。
-        未収録の日本語文字は '?' で表示。"""
+        未収録の日本語文字は '?' で表示。bold=True で1px右に重ね描きして太字風。"""
         cx = x
         for ch in s:
             if ord(ch) < 128:
                 self.text(ch, cx, y, color, scale=2)
+                if bold:
+                    self.text(ch, cx + 1, y, color, scale=2)
             else:
                 g = _JPFONT.get(ch)
                 if g:
@@ -160,6 +196,8 @@ class LCD:
                                                framebuf.MONO_HLSB)
                     _jp_pal.pixel(1, 0, color)   # 前景色（黒も可）
                     self._fb.blit(gfb, cx, y, _JP_KEY, _jp_pal)  # 背景のみ透過
+                    if bold:
+                        self._fb.blit(gfb, cx + 1, y, _JP_KEY, _jp_pal)
                 else:
                     self.text("?", cx, y, color, scale=2)
             cx += 16
@@ -175,7 +213,7 @@ class LCD:
         tmp = bytearray(tw * 8 * 2)
         tfb = framebuf.FrameBuffer(tmp, tw, 8, framebuf.RGB565)
         tfb.fill(0x0000)
-        tfb.text(s, 0, 0, color)
+        tfb.text(s, 0, 0, 0xFFFF)   # 検出用は常に白（黒文字も描けるよう。実色はfill_rect側）
         fb = self._fb
         for cy in range(8):
             yy = y + cy * scale
