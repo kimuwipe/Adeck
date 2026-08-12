@@ -76,20 +76,18 @@ def _profile_badge(lcd: LCD, state) -> None:
     col  = PROFILE_COLORS[pi % len(PROFILE_COLORS)]
     name = PROFILES[pi] if pi < len(PROFILES) else ""
     is_ascii = bool(name) and all(ord(c) < 128 for c in name)
-    if is_ascii:
-        label = name[:8]
-        bw    = len(label) * 8 + 10
-    else:
-        label = (name or "P{}".format(pi + 1))[:4]
-        bw    = len(label) * 16 + 10
-    x0 = W - bw
-    # ページ名とプロファイルバッジの境界線（白の縦線）
+    bw  = W * 2 // 5              # バッジ領域は画面の約2/5で固定
+    x0  = W - bw
+    pad = 6
+    # ページ名とプロファイルバッジの境界線（白の縦線）＋バッジ背景
     lcd.rect(x0 - 2, 0, 2, HDR_H, WHITE, fill=True)
     lcd.rect(x0, 0, bw, HDR_H, col, fill=True)
     if is_ascii:
-        lcd.small_text(label, x0 + 5, 5, BLACK)
+        label = name[:(bw - pad * 2) // 8]       # 領域に収まる最大長
+        lcd.small_text(label, W - len(label) * 8 - pad, 5, BLACK)   # 右詰め
     else:
-        lcd.text_jp(label, x0 + 5, 1, BLACK)
+        label = (name or "P{}".format(pi + 1))[:(bw - pad * 2) // 16]
+        lcd.text_jp(label, W - len(label) * 16 - pad, 1, BLACK)     # 右詰め
 
 def _vline(lcd: LCD):
     """垂直区切り線"""
