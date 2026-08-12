@@ -21,6 +21,12 @@ import time
 import threading
 import queue
 
+# COMは MTA で初期化する（comtypes は import 前の sys.coinit_flags を見る）。
+# エントリポイントなので agent/comtypes より前のここで確実に設定しておく。
+# 目的: pycaw のCOMオブジェクトがメインスレッドのGCで Release されても
+# 落ちないようにする（詳細は agent.py の説明を参照）。
+sys.coinit_flags = 0   # 0 = COINIT_MULTITHREADED
+
 import tkinter as tk
 import customtkinter as ctk
 from tkinter import messagebox
@@ -679,5 +685,9 @@ if __name__ == "__main__":
         _focus_existing_window()
         _notify_already_running()
         sys.exit(0)
+    # メインスレッドでもCOMをMTA初期化しておく。GCの終了処理(__del__→Release)は
+    # メインスレッド(mainloop)で走ることがあり、未初期化だとアクセス違反で落ちる。
+    if AGENT_OK:
+        ag.co_initialize()
     app = StreamDeckApp()
     app.mainloop()
