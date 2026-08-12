@@ -64,7 +64,7 @@ def _header(lcd: LCD, title: str, color: int):
     """カラーヘッダバー（濃色＋白文字で読みやすく）。
     右上は現在プロファイル（プリセット）バッジ用に空けておく。"""
     lcd.rect(0, 0, W, HDR_H, color, fill=True)
-    lcd.small_text(title[:22], PAD, 5, WHITE)
+    lcd.small_text_bold(title[:22], PAD, 5, WHITE)
 
 
 def _profile_badge(lcd: LCD, state) -> None:
@@ -84,10 +84,10 @@ def _profile_badge(lcd: LCD, state) -> None:
     lcd.rect(x0, 0, bw, HDR_H, col, fill=True)
     if is_ascii:
         label = name[:(bw - pad * 2) // 8]       # 領域に収まる最大長
-        lcd.small_text(label, W - len(label) * 8 - pad, 5, BLACK)   # 右詰め
+        lcd.small_text_bold(label, W - len(label) * 8 - pad, 5, BLACK)   # 右詰め・太字
     else:
         label = (name or "P{}".format(pi + 1))[:(bw - pad * 2) // 16]
-        lcd.text_jp(label, W - len(label) * 16 - pad, 1, BLACK)     # 右詰め
+        lcd.text_jp(label, W - len(label) * 16 - pad, 1, BLACK, bold=True)  # 右詰め・太字
 
 def _vline(lcd: LCD):
     """垂直区切り線"""
@@ -226,11 +226,11 @@ def draw_page2(lcd: LCD, page: int, state) -> None:
     _header(lcd, "PROFILE", PURPLE)   # ヘッダは固定色（プロファイル色はバッジ側）
     _vline(lcd)
 
-    # 左カラム: 現在（日本語対応・16px）
+    # 左カラム: 現在（英字10px / 日本語16px＝ALLと同じサイズ）
     y = BODY_Y
     y = _section(lcd, PAD, y, "NOW")
-    lcd.text_jp((PROFILES[pi] if pi < len(PROFILES) else "")[:6], PAD, y, pcol)
-    y += CH + 4
+    h = _name_line(lcd, (PROFILES[pi] if pi < len(PROFILES) else ""), PAD, y, pcol)
+    y += h + 4
     lcd.small_text("TAP:next", PAD, y, DKGRAY)
 
     # 右カラム: 一覧（英字は8px・日本語は16px。多い場合は現在位置が入る窓で表示）
